@@ -1,0 +1,9 @@
+#include <windows.h>
+
+// Minimal dialog for the tree view panel
+// DialogProc handles creating the TreeView manually
+1 DIALOGEX 0, 0, 300, 400
+STYLE WS_CHILD
+EXSTYLE 0
+BEGIN
+END
