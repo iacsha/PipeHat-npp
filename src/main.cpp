@@ -33,15 +33,20 @@ static SegmentDB g_segmentDB;
 static MessageTreeView g_treeView;
 static PHIScrubber g_phiScrubber;
 
-// Command IDs
-static int g_cmdAbout = 0;
-static int g_cmdToggleFold = 0;
-static int g_cmdShowTree = 0;
-static int g_cmdScrubPHI = 0;
+// Tracks whether the user wants the tree panel shown. The panel only actually
+// appears when this is true AND the active buffer is HL7 — so it never auto-loads
+// on startup and closes itself when the HL7 message is closed.
+static bool g_treeIntent = false;
 
-// Menu items
-static FuncItem g_funcItems[4];
+// Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
+// getFuncsArray (Notepad++ keeps the pointers), so they are static.
+static FuncItem g_funcItems[6];
 static int g_nbFuncItems = 0;
+static ShortcutKey g_skScrub;
+static ShortcutKey g_skTree;
+static ShortcutKey g_skFold;
+static ShortcutKey g_skNextField;
+static ShortcutKey g_skPrevField;
 
 // ── Helpers ──
 static HWND getCurrentScintilla() {
@@ -84,6 +89,18 @@ static void checkAndEnableHL7(ScintillaView& view) {
 
     } else if (!isHL7 && view.isHL7) {
         view.isHL7 = false;
+    }
+}
+
+// Single source of truth for panel visibility: show it only when the user has
+// asked for it (g_treeIntent) and the active buffer is actually HL7. Called on
+// startup, buffer switch, and close so the panel follows the HL7 message.
+static void updateTreeVisibility(ScintillaView& view) {
+    if (g_treeIntent && view.isHL7) {
+        g_treeView.show();
+        g_treeView.refresh(view.hWnd, view.fnDirect, view.ptrDirect, view.lexer, g_segmentDB);
+    } else {
+        g_treeView.hide();
     }
 }
 
@@ -328,16 +345,47 @@ static void cmdToggleFold() {
 }
 
 static void cmdShowTree() {
-    if (g_treeView.isVisible()) {
-        g_treeView.hide();
+    // Toggle the user's intent; visibility is then reconciled against whether the
+    // current buffer is HL7. Intent is "sticky" — if toggled on over a non-HL7
+    // buffer, the panel appears as soon as an HL7 message becomes active.
+    g_treeIntent = !g_treeIntent;
+    updateTreeVisibility(getCurrentView());
+}
+
+// Move the caret to the next / previous field on the current line by scanning for
+// the field separator. The separator is a single ASCII byte ('|' by default, or
+// whatever MSH declared), so byte-position scanning is safe.
+static void moveToField(bool forward) {
+    ScintillaView& view = getCurrentView();
+    if (!view.isHL7 || !view.fnDirect) return;
+
+    SciFnDirect fn = view.fnDirect;
+    sptr_t ptr = view.ptrDirect;
+    char sep = (char)view.lexer.delimiters().fieldSep;
+
+    int pos = (int)fn(ptr, SCI_GETCURRENTPOS, 0, 0);
+    int line = (int)fn(ptr, SCI_LINEFROMPOSITION, pos, 0);
+    int lineStart = (int)fn(ptr, SCI_POSITIONFROMLINE, line, 0);
+    int lineEnd = (int)fn(ptr, SCI_GETLINEENDPOSITION, line, 0);
+
+    int target;
+    if (forward) {
+        target = lineEnd;
+        for (int p = pos; p < lineEnd; p++) {
+            if ((char)fn(ptr, SCI_GETCHARAT, p, 0) == sep) { target = p + 1; break; }
+        }
     } else {
-        g_treeView.show();
-        ScintillaView& view = getCurrentView();
-        if (view.isHL7) {
-            g_treeView.refresh(view.hWnd, view.fnDirect, view.ptrDirect, view.lexer, g_segmentDB);
+        target = lineStart;
+        for (int p = pos - 2; p >= lineStart; p--) {
+            if ((char)fn(ptr, SCI_GETCHARAT, p, 0) == sep) { target = p + 1; break; }
         }
     }
+    fn(ptr, SCI_GOTOPOS, target, 0);
+    SetFocus(view.hWnd);
 }
+
+static void cmdNextField() { moveToField(true); }
+static void cmdPrevField() { moveToField(false); }
 
 // ── Plugin exports ──
 extern "C" __declspec(dllexport) void setInfo(NppData notepadPlusData) {
@@ -351,24 +399,49 @@ extern "C" __declspec(dllexport) const wchar_t* getName() {
 }
 
 extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
+    // Keyboard shortcuts. Ctrl+Alt combos are chosen to avoid Notepad++ defaults;
+    // any conflict can be remapped by the user via Settings > Shortcut Mapper > Plugins.
+    g_skScrub      = { true, true, false, 'H' };            // Ctrl+Alt+H  — scrub PHI
+    g_skTree       = { true, true, false, 'T' };            // Ctrl+Alt+T  — toggle tree
+    g_skFold       = { true, true, false, 'F' };            // Ctrl+Alt+F  — toggle folding
+    g_skNextField  = { true, true, false, VK_RIGHT };      // Ctrl+Alt+Right — next field
+    g_skPrevField  = { true, true, false, VK_LEFT };       // Ctrl+Alt+Left  — prev field
+
     g_nbFuncItems = 0;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Scrub PHI");
     g_funcItems[g_nbFuncItems]._pFunc = cmdScrubPHI;
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skScrub;
     g_nbFuncItems++;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Show HL7 Tree View");
     g_funcItems[g_nbFuncItems]._pFunc = cmdShowTree;
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skTree;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Next Field");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdNextField;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skNextField;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Previous Field");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdPrevField;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skPrevField;
     g_nbFuncItems++;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Toggle HL7 Folding");
     g_funcItems[g_nbFuncItems]._pFunc = cmdToggleFold;
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skFold;
     g_nbFuncItems++;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"About PipeHat");
@@ -388,12 +461,17 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
         case NPPN_BUFFERACTIVATED: {
             ScintillaView& view = getCurrentView();
             checkAndEnableHL7(view);
+            // Follow the active buffer: reveal the panel for HL7 messages (if the
+            // user wants it) and hide it when switching to / closing into a non-HL7
+            // buffer.
+            updateTreeVisibility(view);
             break;
         }
 
         case NPPN_FILESAVED: {
             ScintillaView& view = getCurrentView();
             checkAndEnableHL7(view);
+            updateTreeVisibility(view);
             break;
         }
 
@@ -401,6 +479,9 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
             ScintillaView& view = getCurrentView();
             checkAndEnableHL7(view);
             g_treeView.create((HINSTANCE)g_hModule, g_nppData._nppHandle, &g_nppData);
+            // Force the panel hidden at startup regardless of any dock state
+            // Notepad++ restored from the previous session (g_treeIntent is false).
+            updateTreeVisibility(view);
             break;
         }
 
