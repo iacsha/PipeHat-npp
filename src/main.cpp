@@ -16,9 +16,11 @@
 #include "PHIScrubber.h"
 #include "SciUtils.h"
 #include "ConformanceProfile.h"
+#include "Validator.h"
 
-// Scintilla indicator slot for conformance squiggles (0-7 are reserved for lexers).
+// Scintilla indicator slots for squiggles (0-7 are reserved for lexers).
 #define PIPEHAT_INDIC_CONFORMANCE 18
+#define PIPEHAT_INDIC_VALIDATION  19
 
 // ── Global state ──
 static NppData g_nppData;
@@ -47,7 +49,7 @@ static bool g_treeIntent = false;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[9];
+static FuncItem g_funcItems[10];
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -57,6 +59,7 @@ static ShortcutKey g_skPrevField;
 static ShortcutKey g_skCheck;
 static ShortcutKey g_skPretty;
 static ShortcutKey g_skEnable;
+static ShortcutKey g_skValidate;
 
 // ── Helpers ──
 static HWND getCurrentScintilla() {
@@ -575,6 +578,78 @@ static void cmdPrettyPrint() {
     g_treeView.refresh(view.hWnd, view.fnDirect, view.ptrDirect, view.lexer, g_segmentDB);
 }
 
+// Structural validation / malform detection. Advisory only (never blocking):
+// squiggle-underlines malformed structure and lists the findings.
+static void cmdValidate() {
+    ScintillaView& view = getCurrentView();
+    if (!view.isHL7 || !view.fnDirect) {
+        MessageBoxW(g_nppData._nppHandle, L"No HL7 document is currently active.",
+                    L"Validate Message", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    SciFnDirect fn = view.fnDirect;
+    sptr_t ptr = view.ptrDirect;
+
+    int lineCount = (int)fn(ptr, SCI_GETLINECOUNT, 0, 0);
+    std::vector<std::wstring> lines;
+    lines.reserve(lineCount);
+
+    HL7Lexer lexer;
+    for (int li = 0; li < lineCount; li++) {
+        std::wstring wl = getLineW(fn, ptr, li);
+        lines.push_back(wl);
+        if (!wl.empty() && lexer.extractSegmentID(wl.c_str(), (int)wl.size()) == L"MSH")
+            lexer.parseMSH(wl.c_str(), (int)wl.size());
+    }
+    wchar_t fieldSep = lexer.delimiters().fieldSep;
+    wchar_t escSep   = lexer.delimiters().escapeSep;
+
+    std::vector<hl7val::Finding> findings = hl7val::validate(lines, fieldSep, escSep);
+
+    // Configure and clear the validation squiggle (orange, distinct from conformance).
+    fn(ptr, SCI_SETINDICATORCURRENT, PIPEHAT_INDIC_VALIDATION, 0);
+    fn(ptr, SCI_INDICSETSTYLE, PIPEHAT_INDIC_VALIDATION, INDIC_SQUIGGLE);
+    fn(ptr, SCI_INDICSETFORE, PIPEHAT_INDIC_VALIDATION, 0x00A5FF); // orange (BGR)
+    fn(ptr, SCI_INDICATORCLEARRANGE, 0, (int)fn(ptr, SCI_GETLENGTH, 0, 0));
+
+    std::wstring report;
+    int shown = 0;
+    for (const auto& fnd : findings) {
+        int lineStart = (int)fn(ptr, SCI_POSITIONFROMLINE, fnd.line, 0);
+        const std::wstring& wl = lines[fnd.line];
+        int fillStart, fillLen;
+        if (fnd.wcharLen <= 0) {
+            int lineEnd = (int)fn(ptr, SCI_GETLINEENDPOSITION, fnd.line, 0);
+            fillStart = lineStart;
+            fillLen = lineEnd - lineStart;
+        } else {
+            int prefixBytes = WideCharToMultiByte(CP_UTF8, 0, wl.c_str(), fnd.wcharStart, nullptr, 0, nullptr, nullptr);
+            int spanBytes = WideCharToMultiByte(CP_UTF8, 0, wl.c_str() + fnd.wcharStart, fnd.wcharLen, nullptr, 0, nullptr, nullptr);
+            fillStart = lineStart + (prefixBytes < 0 ? 0 : prefixBytes);
+            fillLen = spanBytes < 0 ? 0 : spanBytes;
+        }
+        if (fillLen > 0) {
+            fn(ptr, SCI_SETINDICATORCURRENT, PIPEHAT_INDIC_VALIDATION, 0);
+            fn(ptr, SCI_INDICATORFILLRANGE, fillStart, fillLen);
+        }
+        if (++shown <= 25)
+            report += L"Line " + std::to_wstring(fnd.line + 1) + L": " + fnd.message + L"\r\n";
+    }
+
+    if (findings.empty()) {
+        MessageBoxW(g_nppData._nppHandle,
+            L"No structural problems found.", L"Validate Message", MB_OK | MB_ICONINFORMATION);
+    } else {
+        std::wstring out = L"Found " + std::to_wstring((int)findings.size()) +
+                           L" structural finding(s):\r\n\r\n" + report;
+        if ((int)findings.size() > 25) out += L"\r\n(showing first 25)";
+        out += L"\r\n\r\nThese are advisory \x2014 real-world dialects may be fine. "
+               L"Flagged spans are squiggle-underlined.";
+        MessageBoxW(g_nppData._nppHandle, out.c_str(),
+                    L"Validate Message \x2014 Findings", MB_OK | MB_ICONWARNING);
+    }
+}
+
 // ── Menu commands ──
 static void cmdAbout() {
     MessageBoxW(g_nppData._nppHandle,
@@ -685,6 +760,7 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skCheck      = { true, true, false, 'C' };            // Ctrl+Alt+C  — check conformance
     g_skPretty     = { true, true, false, 'R' };            // Ctrl+Alt+R  — reformat / pretty-print
     g_skEnable     = { true, true, false, 'E' };            // Ctrl+Alt+E  — force-enable HL7 mode
+    g_skValidate   = { true, true, false, 'V' };            // Ctrl+Alt+V  — validate / malform check
 
     g_nbFuncItems = 0;
 
@@ -728,6 +804,13 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_funcItems[g_nbFuncItems]._pShKey = &g_skCheck;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Validate Message");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdValidate;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skValidate;
     g_nbFuncItems++;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Pretty-Print (segments per line)");
