@@ -54,6 +54,15 @@ holds the global state and wires Notepad++ notifications to the feature modules:
   and generates fake replacement data. The scrub command itself lives in `main.cpp`
   (`cmdScrubPHI`), which drives the lexer + scrubber and applies `SCI_REPLACETARGET` edits.
 
+Later features (v1.1–v1.2) are **header-only** modules (no CMake edit needed since sources
+are listed explicitly): **`TriggerEventDB.h`** (MSH-9/EVN-1 trigger-event + MSH-12 version
+decode, plus `fieldValueAt`), **`HL7Escape.h`** (escape-sequence decode), **`ConformanceProfile.h`**
+(editable per-interface `max`/`values`/`required` rules), **`Validator.h`** (advisory structural
+malform checks), and **`MessageDiff.h`** (segment/field-aware clipboard diff). Their commands
+(`cmdCheckConformance`, `cmdValidate`, `cmdCompareClipboard`, `cmdPrettyPrint`, `cmdEnableHL7`,
+field navigation, folding) live in `main.cpp` and are exposed via `getFuncsArray` with
+`Ctrl+Alt+` hotkeys. Conformance squiggles use Scintilla indicator 18, validation 19.
+
 Data flow: `beNotified` (buffer activated / modified / dwell) → `HL7Lexer.tokenize` →
 either `ScintillaStyler` (colors + tooltips) or `MessageTreeView.refresh` (tree). The
 scrub command runs its own three-pass lexer sweep over the whole document.

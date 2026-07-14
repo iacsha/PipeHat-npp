@@ -44,3 +44,21 @@ repo. Docs: `docs/05-CODE-REVIEW.md` (defects + fix status), `docs/06-ROADMAP.md
   `PipeHat.dll`).
 - `docs/00–04` are the original design brief and are **aspirational** — several classes they
   describe don't exist. Trust the source and `docs/05`/`docs/06`.
+
+## Feature modules (v1.1–v1.2, all header-only)
+
+New features are **header-only** modules so they need no CMakeLists edit (sources are listed
+explicitly, not globbed): `TriggerEventDB.h` (MSH-9/EVN-1/MSH-12 decode + `fieldValueAt`),
+`HL7Escape.h` (escape decode), `ConformanceProfile.h` (editable per-interface rules),
+`Validator.h` (structural malform checks), `MessageDiff.h` (segment/field-aware clipboard
+diff). Prefer this pattern for the next feature.
+
+- **The MSH off-by-one lives in every new field-walk.** `TriggerEventDB::fieldValueAt`, the
+  conformance field splitter (`cmdCheckConformance`), the validator's MSH check, and
+  `MessageDiff` all special-case MSH (`MSH-N` = value after the `N-1`-th separator). Any new
+  field iteration must do the same — and prove it with a standalone test (the pattern: a tiny
+  CMake project in the scratchpad that reuses the MSVC toolchain).
+- Scintilla indicator slots: **18** = conformance squiggles, **19** = validation squiggles
+  (0–7 are reserved for lexers). Pick 20+ for new indicators.
+- Menu commands live in `getFuncsArray` with static `ShortcutKey` objects (Ctrl+Alt+ combos);
+  bump `g_funcItems[N]` when adding one.
