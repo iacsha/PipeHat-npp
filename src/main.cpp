@@ -47,7 +47,7 @@ static bool g_treeIntent = false;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[8];
+static FuncItem g_funcItems[9];
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -56,6 +56,7 @@ static ShortcutKey g_skNextField;
 static ShortcutKey g_skPrevField;
 static ShortcutKey g_skCheck;
 static ShortcutKey g_skPretty;
+static ShortcutKey g_skEnable;
 
 // ── Helpers ──
 static HWND getCurrentScintilla() {
@@ -642,6 +643,26 @@ static void moveToField(bool forward) {
 static void cmdNextField() { moveToField(true); }
 static void cmdPrevField() { moveToField(false); }
 
+// Manually force HL7 mode on the current buffer, bypassing auto-detection. Lets the
+// user enable highlighting for content that doesn't start with MSH/FHS/BHS (embedded
+// messages, custom headers, odd exports). Uses whatever delimiters MSH declares, or
+// the HL7 defaults if no MSH is present.
+static void cmdEnableHL7() {
+    ScintillaView& view = getCurrentView();
+    if (!view.hWnd || !view.fnDirect) return;
+
+    view.isHL7 = true;
+    view.lexer.reset();
+    view.styler.defineStyles();
+    view.styler.styleAll();
+    view.fnDirect(view.ptrDirect, SCI_SETLEXER, SCLEX_CONTAINER, 0);
+    int length = (int)view.fnDirect(view.ptrDirect, SCI_GETLENGTH, 0, 0);
+    view.fnDirect(view.ptrDirect, SCI_COLOURISE, 0, length - 1);
+    setFoldLevels(view);
+    g_treeView.refresh(view.hWnd, view.fnDirect, view.ptrDirect, view.lexer, g_segmentDB);
+    updateTreeVisibility(view);
+}
+
 // ── Plugin exports ──
 extern "C" __declspec(dllexport) void setInfo(NppData notepadPlusData) {
     g_nppData = notepadPlusData;
@@ -663,6 +684,7 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skPrevField  = { true, true, false, VK_LEFT };       // Ctrl+Alt+Left  — prev field
     g_skCheck      = { true, true, false, 'C' };            // Ctrl+Alt+C  — check conformance
     g_skPretty     = { true, true, false, 'R' };            // Ctrl+Alt+R  — reformat / pretty-print
+    g_skEnable     = { true, true, false, 'E' };            // Ctrl+Alt+E  — force-enable HL7 mode
 
     g_nbFuncItems = 0;
 
@@ -671,6 +693,13 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_funcItems[g_nbFuncItems]._pShKey = &g_skScrub;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Enable HL7 Highlighting");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdEnableHL7;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skEnable;
     g_nbFuncItems++;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Show HL7 Tree View");

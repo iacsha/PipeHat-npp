@@ -228,6 +228,22 @@ void ScintillaStyler::styleRange(int startPos, int endPos) {
 
 bool ScintillaStyler::detectHL7(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrDirect) {
     (void)hScintilla;
-    std::string content = getLineUtf8(fnDirect, ptrDirect, 0);
-    return content.size() >= 3 && content.compare(0, 3, "MSH") == 0;
+    // Look at the first few non-blank lines (skipping a UTF-8 BOM and leading blank
+    // lines) for an HL7 header segment: MSH (message), or FHS/BHS (batch/file headers).
+    int lineCount = (int)fnDirect(ptrDirect, SCI_GETLINECOUNT, 0, 0);
+    int checkedContentLines = 0;
+    for (int li = 0; li < lineCount && checkedContentLines < 3; li++) {
+        std::string s = getLineUtf8(fnDirect, ptrDirect, li);
+        if (li == 0 && s.size() >= 3 &&
+            (unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBB && (unsigned char)s[2] == 0xBF) {
+            s.erase(0, 3); // strip UTF-8 BOM
+        }
+        if (s.empty()) continue; // skip leading blank lines
+        checkedContentLines++;
+        if (s.size() >= 3) {
+            std::string h = s.substr(0, 3);
+            if (h == "MSH" || h == "FHS" || h == "BHS") return true;
+        }
+    }
+    return false;
 }
