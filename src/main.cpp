@@ -117,17 +117,25 @@ struct Replacement {
 // "anonymize" mode, where fake data is intentionally identifier-shaped.
 static int scanResidualPII(SciFnDirect fn, sptr_t ptr) {
     static const std::wregex ssn(L"[0-9]{3}-[0-9]{2}-[0-9]{4}");
+    // Safe Harbor identifiers: email addresses and IPv4 addresses.
+    static const std::wregex email(L"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
+    static const std::wregex ipv4(L"\\b(?:[0-9]{1,3}\\.){3}[0-9]{1,3}\\b");
     int lineCount = (int)fn(ptr, SCI_GETLINECOUNT, 0, 0);
     int hits = 0;
+
+    auto countMatches = [](const std::wstring& s, const std::wregex& re) {
+        return (int)std::distance(std::wsregex_iterator(s.begin(), s.end(), re),
+                                  std::wsregex_iterator());
+    };
 
     for (int li = 0; li < lineCount; li++) {
         std::wstring wl = getLineW(fn, ptr, li);
         if (wl.empty()) continue;
 
-        // SSN-shaped runs
-        hits += (int)std::distance(
-            std::wsregex_iterator(wl.begin(), wl.end(), ssn),
-            std::wsregex_iterator());
+        // SSN-shaped runs, emails, IPv4 addresses
+        hits += countMatches(wl, ssn);
+        hits += countMatches(wl, email);
+        hits += countMatches(wl, ipv4);
 
         // Long unbroken digit runs (>= 9 digits): MRNs, account/policy numbers, phones
         int run = 0;

@@ -279,4 +279,32 @@ void PHIScrubber::initFieldMap() {
 
     // ── EVN operator ──
     m_fields.push_back({L"EVN", 5,  L"[NAME]",        L"Operator ID"});
+
+    // ── M8: HIPAA Safe Harbor — individual-related date/time elements ──
+    // Safe Harbor requires removing all date elements (except year) tied to an
+    // individual: admission, discharge, service, procedure, diagnosis, death, etc.
+    m_fields.push_back({L"EVN", 2,  L"[DATE]",        L"Recorded Date/Time"});
+    m_fields.push_back({L"EVN", 6,  L"[DATE]",        L"Event Occurred"});
+    m_fields.push_back({L"PV1", 44, L"[DATE]",        L"Admit Date/Time"});
+    m_fields.push_back({L"PV1", 45, L"[DATE]",        L"Discharge Date/Time"});
+    m_fields.push_back({L"PV2", 8,  L"[DATE]",        L"Expected Admit Date/Time"});
+    m_fields.push_back({L"PV2", 9,  L"[DATE]",        L"Expected Discharge Date/Time"});
+    m_fields.push_back({L"OBR", 7,  L"[DATE]",        L"Observation Date/Time"});
+    m_fields.push_back({L"OBR", 8,  L"[DATE]",        L"Observation End Date/Time"});
+    m_fields.push_back({L"OBR", 14, L"[DATE]",        L"Specimen Received Date/Time"});
+    m_fields.push_back({L"OBX", 14, L"[DATE]",        L"Date/Time of the Observation"});
+    m_fields.push_back({L"DG1", 5,  L"[DATE]",        L"Diagnosis Date/Time"});
+    m_fields.push_back({L"PR1", 5,  L"[DATE]",        L"Procedure Date/Time"});
+    m_fields.push_back({L"SCH", 11, L"[DATE]",        L"Appointment Timing"});
+
+    // ── M8: provider / scheduling personnel segments ──
+    m_fields.push_back({L"PV1", 52, L"[NAME]",        L"Other Healthcare Provider"});
+    m_fields.push_back({L"ROL", 4,  L"[NAME]",        L"Role Person (Provider)"});
+    m_fields.push_back({L"AIP", 3,  L"[NAME]",        L"Personnel Resource ID"});
+    m_fields.push_back({L"AIG", 3,  L"[NAME]",        L"Resource ID"});
+    m_fields.push_back({L"AIL", 3,  L"[LOCATION]",    L"Location Resource ID"});
+    m_fields.push_back({L"PRD", 2,  L"[NAME]",        L"Referral Provider Name"});
+    m_fields.push_back({L"PRD", 3,  L"[ADDRESS]",     L"Referral Provider Address"});
+    m_fields.push_back({L"CTD", 3,  L"[ADDRESS]",     L"Contact Address"});
+    m_fields.push_back({L"CTD", 5,  L"[PHONE]",       L"Contact Communication"});
 }
