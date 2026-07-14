@@ -477,8 +477,11 @@ static void cmdCheckConformance() {
 // ── Menu commands ──
 static void cmdAbout() {
     MessageBoxW(g_nppData._nppHandle,
-        L"PipeHat v1.0.0 \x2014 HL7 v2.x for Notepad++\r\n"
-        L"Syntax highlighting, field tooltips, message tree view, and PHI scrubbing.\r\n"
+        L"PipeHat v1.1.0 \x2014 HL7 v2.x for Notepad++\r\n\r\n"
+        L"Syntax highlighting, field tooltips (with trigger-event decoding),\r\n"
+        L"message tree view, PHI scrubbing, and conformance checking.\r\n\r\n"
+        L"Hotkeys: Ctrl+Alt+T tree, Ctrl+Alt+H scrub, Ctrl+Alt+C check,\r\n"
+        L"Ctrl+Alt+Left/Right field nav \x2014 see the Plugins menu.\r\n"
         L"Activates for buffers whose first line starts with MSH.",
         L"About PipeHat", MB_OK | MB_ICONINFORMATION);
 }

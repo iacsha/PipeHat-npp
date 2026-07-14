@@ -14,14 +14,33 @@ knows by heart.
 - **Syntax highlighting** — segments, fields, components, and delimiters are colorized as
   you read, driven by a delimiter-aware HL7 tokenizer (reads the real separators from MSH).
 - **Field tooltips** — hover any field to see its segment/field name, data type, and
-  required flag, from a built-in segment definition table.
-- **Dockable message tree** — a segment → field outline of the message; click a node to
-  jump the editor to it.
-- **PHI scrubber** — de-identify a message for sharing/testing. Runs **fail-closed**: any
-  field the parser can't account for is reported, and a residual-identifier scan warns you
-  before you ever treat output as de-identified.
+  required flag. Coded values are **decoded**: hovering `MSH-9` or `EVN-1` shows what the
+  trigger event means (e.g. `ADT^A01` → *Admit / Visit Notification*, `SIU^S12` → *New
+  Appointment Booking*).
+- **Dockable message tree** — a segment → field outline of the message with the same
+  trigger-event decoding inline; click a node to jump the editor to it. The panel follows
+  the active message: it never auto-opens on startup and closes when you close the HL7 file.
+- **PHI scrubber** — de-identify a message for sharing/testing, with HIPAA Safe Harbor
+  field coverage (names, IDs, dates, provider/scheduling segments, and more). Runs
+  **fail-closed**: any field the parser can't account for is reported, and a residual scan
+  (SSN, email, IP, long digit runs) warns you before you ever treat output as de-identified.
+- **Conformance checking** — validate a message against per-interface rules (max field
+  length, allowed value sets, required fields) defined in an editable profile. Violations
+  are squiggle-underlined and listed — a pre-flight *"will the receiver accept this?"* check.
 
 The plugin activates automatically when a buffer's **first line starts with `MSH`**.
+
+## Keyboard shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+Alt+T` | Toggle the message tree panel |
+| `Ctrl+Alt+H` | Scrub PHI |
+| `Ctrl+Alt+C` | Check conformance |
+| `Ctrl+Alt+F` | Toggle HL7 folding |
+| `Ctrl+Alt+←` / `Ctrl+Alt+→` | Jump to previous / next field |
+
+Any conflicts can be remapped in *Settings → Shortcut Mapper → Plugin commands*.
 
 ---
 
@@ -89,6 +108,21 @@ The scrubber is a **best-effort de-identification aid, not a compliance guarante
 
 Always review scrubbed output before sharing it outside a trusted boundary.
 
+### Conformance profiles
+
+`Check Conformance` (`Ctrl+Alt+C`) validates the active message against rules you define in
+`PipeHat.profile`, created on first run in the Notepad++ plugin config folder
+(`%AppData%\Notepad++\plugins\config`). Rules are per-interface — the same field can carry
+different limits at different endpoints. Format:
+
+```
+PID-8.values=M,F,O,U,A,N   # first component must be one of these
+PID-5.max=48               # field must be <= 48 characters
+MSH-9.required=true        # field must be present
+```
+
+Violating fields are squiggle-underlined in the editor and listed in a summary dialog.
+
 ---
 
 ## Documentation
@@ -109,8 +143,10 @@ Always review scrubbed output before sharing it outside a trusted boundary.
 
 ## Status
 
-First working version. Crash-class defects and the fail-open PHI leak found in the initial
-review are fixed and build-verified. See the roadmap for what's next.
+**v1.1.0.** Crash-class defects and the fail-open PHI leak from the initial review are fixed
+and build-verified. v1.1 adds trigger-event decoding, HIPAA Safe Harbor scrubber coverage,
+configurable conformance checking, navigation hotkeys, and smarter panel behavior. See the
+roadmap for what's next.
 
 ---
 

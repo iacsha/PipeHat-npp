@@ -13,7 +13,7 @@
 #define SCE_HL7_COMMENT 9
 
 #define HL7_PLUGIN_NAME L"PipeHat"
-#define HL7_PLUGIN_VERSION L"1.0.0"
+#define HL7_PLUGIN_VERSION L"1.1.0"
 #define HL7_PLUGIN_TAGLINE L"HL7 v2.x for Notepad++"
 #define HL7_PLUGIN_DLL L"PipeHat.dll"
 

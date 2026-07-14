@@ -24,6 +24,21 @@
 
 ---
 
+## Shipped (v1.1.0)
+
+| Item | What | Status |
+|------|------|--------|
+| Trigger-event decoding | MSH-9 / EVN-1 message-type + event decode in tooltips and tree (`TriggerEventDB.h`) | ✅ |
+| M8 (partial) | Safe Harbor dates (admit/discharge/observation/event/dx/procedure) + provider segments (ROL/AIP/AIG/AIL/PRD/PV1-52); residual scan now flags email + IPv4 | ✅ |
+| Conformance profiles | Per-interface `max` / `values` / `required` rules from editable `PipeHat.profile`; `Check Conformance` squiggles + report (`ConformanceProfile.h`) | ✅ |
+| Navigation hotkeys | Ctrl+Alt+ T/H/C/F and Ctrl+Alt+←/→ field nav | ✅ |
+| Panel behavior | Tree no longer auto-loads on startup; follows the active buffer and closes with the HL7 message | ✅ |
+
+**Still open from these areas:** M8 remainder (age > 89, anonymize-mode structural coverage
+check), conformance in hover tooltips + tree problem-list, and full HL7 version awareness.
+
+---
+
 ## Upcoming fixes (remaining review items)
 
 | ID | Item | Priority | Notes |
