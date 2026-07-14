@@ -111,3 +111,9 @@ Always review scrubbed output before sharing it outside a trusted boundary.
 
 First working version. Crash-class defects and the fail-open PHI leak found in the initial
 review are fixed and build-verified. See the roadmap for what's next.
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 Shawn Iachetta.
