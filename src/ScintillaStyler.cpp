@@ -4,6 +4,7 @@
 #include "PluginDefs.h"
 #include "SciUtils.h"
 #include "TriggerEventDB.h"
+#include "HL7Escape.h"
 #include <string>
 #include <vector>
 #include <cstring>
@@ -29,13 +30,6 @@ void ScintillaStyler::sciV(unsigned int msg, uptr_t wParam, sptr_t lParam) {
 int ScintillaStyler::sciGetLength() { return (int)sci(SCI_GETLENGTH); }
 int ScintillaStyler::sciGetLineCount() { return (int)sci(SCI_GETLINECOUNT); }
 int ScintillaStyler::sciGetLineEnd(int line) { return (int)sci(SCI_GETLINEENDPOSITION, line); }
-
-void ScintillaStyler::sciGetLine(int line, char* buf, int bufSize) {
-    if (bufSize <= 0) return;
-    buf[0] = (char)(bufSize - 1);
-    sci(SCI_GETLINE, line, (sptr_t)buf);
-    buf[bufSize - 1] = '\0';
-}
 
 void ScintillaStyler::defineStyles() {
     sciV(SCI_STYLECLEARALL);
@@ -136,6 +130,23 @@ void ScintillaStyler::showFieldTooltip(int position, HL7Lexer& lexer, SegmentDB&
             std::string d = toUtf8(decoded);
             strncat_s(tipText, sizeof(tipText), "\r\n", _TRUNCATE);
             strncat_s(tipText, sizeof(tipText), d.c_str(), _TRUNCATE);
+        }
+
+        // If the field carries HL7 escape sequences, show the decoded text. Skip
+        // MSH-1/MSH-2 (the delimiter-definition fields, where '\' is data, not an escape).
+        const HL7Delimiters& dl = lexer.delimiters();
+        bool isMSH = (segId == L"MSH");
+        if (!(isMSH && fieldIdx <= 2)) {
+            std::wstring raw = hl7trig::fieldValueAt(wline, dl.fieldSep, isMSH, fieldIdx);
+            if (hl7esc::containsEscape(raw, dl.escapeSep)) {
+                std::wstring dec = hl7esc::decode(raw, dl.escapeSep, dl.fieldSep,
+                                                  dl.compSep, dl.repeatSep, dl.subcompSep);
+                if (dec != raw) {
+                    std::string d = toUtf8(L"Decoded: " + dec);
+                    strncat_s(tipText, sizeof(tipText), "\r\n", _TRUNCATE);
+                    strncat_s(tipText, sizeof(tipText), d.c_str(), _TRUNCATE);
+                }
+            }
         }
     }
 

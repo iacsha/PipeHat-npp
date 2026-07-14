@@ -103,6 +103,21 @@ checks live and flags. Turns PipeHat from a viewer into a **pre-flight conforman
   daily "why did the receiving system reject this?" troubleshooting loop. Foundation for the
   data-driven tables in P2.
 
+**MLLP send / receive over TCP/IP** 💡 *(engineer-requested)* — **major, v2.0**
+Turn PipeHat from a viewer into a live interface tester using HL7's Minimal Lower Layer
+Protocol (MLLP) framing (`<VT>` 0x0B … message … `<FS>` 0x1C `<CR>` 0x0D):
+- **Send** the active message to a host:port and display the returned ACK/NAK (parse MSA-1).
+- **Listen** as an MLLP server on a port, capturing inbound messages into new buffers and
+  returning an ACK.
+- **Security posture change — must be explicit.** PipeHat currently has *zero network egress*;
+  this is the first feature that opens a socket. Requirements: **off by default**, explicit
+  per-action confirmation, a visible "listening/connected" indicator, bind to loopback unless
+  the user opts into a specific interface, and a clear warning that **PHI will cross the wire in
+  cleartext** unless TLS (MLLP/S) is configured. Threading: the listener runs on a background
+  thread and must marshal buffer creation back to the UI thread.
+- Sits behind its own build flag / settings toggle so the default distribution stays
+  egress-free for users who want a pure offline viewer.
+
 ### P2 — workflow polish
 
 - **Pretty-print / reformat** — expand a packed message to one-field-per-line and back.

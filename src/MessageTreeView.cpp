@@ -163,7 +163,7 @@ void MessageTreeView::refresh(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrD
                             sharedLexer.delimiters().fieldSep, sharedLexer.delimiters().compSep);
                         if (!decoded.empty()) flabel += L"  \x21D2 " + decoded; // ⇒
                     }
-                    addFieldNode(segNode, flabel, li, fieldIdx, (LPARAM)(fieldIdx));
+                    addFieldNode(segNode, flabel, li, fieldIdx, (LPARAM)(li + 1));
                     fieldValue.clear();
                 }
                 inField = false;
@@ -229,7 +229,8 @@ void MessageTreeView::onTreeClick(LPARAM lParam) {
         SciFnDirect fn = (SciFnDirect)SendMessage(hSci, SCI_GETDIRECTFUNCTION, 0, 0);
         sptr_t ptr = (sptr_t)SendMessage(hSci, SCI_GETDIRECTPOINTER, 0, 0);
         if (fn) {
-            fn(ptr, SCI_GOTOLINE, lineNumber, 0);
+            // lParam stores line+1 (so 0 can mean "no line"); SCI_GOTOLINE is 0-based.
+            fn(ptr, SCI_GOTOLINE, lineNumber - 1, 0);
             SetFocus(hSci);
         }
     }
@@ -288,7 +289,8 @@ INT_PTR CALLBACK MessageTreeView::dlgProc(HWND hDlg, UINT message, WPARAM wParam
                             SciFnDirect fn = (SciFnDirect)SendMessage(hSci, SCI_GETDIRECTFUNCTION, 0, 0);
                             sptr_t ptr = (sptr_t)SendMessage(hSci, SCI_GETDIRECTPOINTER, 0, 0);
                             if (fn) {
-                                fn(ptr, SCI_GOTOLINE, lineNumber, 0);
+                                // lParam is line+1; SCI_GOTOLINE is 0-based.
+                                fn(ptr, SCI_GOTOLINE, lineNumber - 1, 0);
                                 SetFocus(hSci);
                             }
                         }

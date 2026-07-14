@@ -29,7 +29,6 @@ public:
     int sciGetLength();
     int sciGetLineCount();
     int sciGetLineEnd(int line);
-    void sciGetLine(int line, char* buf, int bufSize);
 
 private:
     HWND m_hScintilla = nullptr;
