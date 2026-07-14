@@ -3,6 +3,7 @@
 #include "SegmentDB.h"
 #include "PluginDefs.h"
 #include "SciUtils.h"
+#include "TriggerEventDB.h"
 #include <string>
 #include <vector>
 #include <cstring>
@@ -124,6 +125,17 @@ void ScintillaStyler::showFieldTooltip(int position, HL7Lexer& lexer, SegmentDB&
                      fieldIdx, toUtf8(segDef->name).c_str());
         } else {
             snprintf(tipText, sizeof(tipText), "%s-%d", toUtf8(segId).c_str(), fieldIdx);
+        }
+
+        // Decode coded values (MSH-9 message type / trigger event, EVN-1 event) onto
+        // a second tooltip line so the reader sees "A01" *and* what it means.
+        std::wstring decoded = hl7trig::decodeField(segId, fieldIdx, wline,
+                                                    lexer.delimiters().fieldSep,
+                                                    lexer.delimiters().compSep);
+        if (!decoded.empty()) {
+            std::string d = toUtf8(decoded);
+            strncat_s(tipText, sizeof(tipText), "\r\n", _TRUNCATE);
+            strncat_s(tipText, sizeof(tipText), d.c_str(), _TRUNCATE);
         }
     }
 

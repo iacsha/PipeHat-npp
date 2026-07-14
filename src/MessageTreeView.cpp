@@ -4,6 +4,7 @@
 #include "ScintillaStyler.h"
 #include "SciUtils.h"
 #include "PluginDefs.h"
+#include "TriggerEventDB.h"
 #include <string>
 #include <vector>
 #include <cwctype>
@@ -157,6 +158,11 @@ void MessageTreeView::refresh(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrD
                     if (!fieldValue.empty()) {
                         flabel += L" = " + fieldValue;
                     }
+                    {
+                        std::wstring decoded = hl7trig::decodeField(segId, fieldIdx, wlStr,
+                            sharedLexer.delimiters().fieldSep, sharedLexer.delimiters().compSep);
+                        if (!decoded.empty()) flabel += L"  \x21D2 " + decoded; // ⇒
+                    }
                     addFieldNode(segNode, flabel, li, fieldIdx, (LPARAM)(fieldIdx));
                     fieldValue.clear();
                 }
@@ -184,6 +190,11 @@ void MessageTreeView::refresh(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrD
             }
             if (!fieldValue.empty()) {
                 flabel += L" = " + fieldValue;
+            }
+            {
+                std::wstring decoded = hl7trig::decodeField(segId, fieldIdx, wlStr,
+                    sharedLexer.delimiters().fieldSep, sharedLexer.delimiters().compSep);
+                if (!decoded.empty()) flabel += L"  \x21D2 " + decoded; // ⇒
             }
             addFieldNode(segNode, flabel, li, fieldIdx, (LPARAM)(fieldIdx));
         }
