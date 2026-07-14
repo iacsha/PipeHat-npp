@@ -163,12 +163,40 @@ inline std::wstring decodeMSH9(const std::wstring& field, wchar_t compSep) {
     return out;
 }
 
+// HL7 v2.x version-awareness: name/era for the MSH-12 version id.
+inline std::wstring versionName(const std::wstring& code) {
+    static const std::unordered_map<std::wstring, std::wstring> m = {
+        {L"2.1",   L"HL7 v2.1 (1990)"},
+        {L"2.2",   L"HL7 v2.2 (1994)"},
+        {L"2.3",   L"HL7 v2.3 (1997)"},
+        {L"2.3.1", L"HL7 v2.3.1 (1999)"},
+        {L"2.4",   L"HL7 v2.4 (2000)"},
+        {L"2.5",   L"HL7 v2.5 (2003)"},
+        {L"2.5.1", L"HL7 v2.5.1 (2007)"},
+        {L"2.6",   L"HL7 v2.6 (2007)"},
+        {L"2.7",   L"HL7 v2.7 (2011)"},
+        {L"2.7.1", L"HL7 v2.7.1 (2012)"},
+        {L"2.8",   L"HL7 v2.8 (2014)"},
+        {L"2.8.1", L"HL7 v2.8.1 (2015)"},
+        {L"2.8.2", L"HL7 v2.8.2 (2016)"},
+        {L"2.9",   L"HL7 v2.9 (2019)"},
+    };
+    auto it = m.find(code);
+    return it != m.end() ? it->second : std::wstring();
+}
+
 // Field-level decode hook used by both the tree panel and hover tooltips. Returns an
 // empty string for fields that carry no coded meaning.
 inline std::wstring decodeField(const std::wstring& segId, int fieldIdx,
                                 const std::wstring& rawLine, wchar_t fieldSep, wchar_t compSep) {
     if (segId == L"MSH" && fieldIdx == 9) {
         return decodeMSH9(fieldValueAt(rawLine, fieldSep, true, 9), compSep);
+    }
+    if (segId == L"MSH" && fieldIdx == 12) {
+        std::wstring v = fieldValueAt(rawLine, fieldSep, true, 12);
+        size_t p = v.find(compSep);           // MSH-12 may be VID composite; take version id
+        if (p != std::wstring::npos) v = v.substr(0, p);
+        return versionName(v);
     }
     if (segId == L"EVN" && fieldIdx == 1) {
         std::wstring v = fieldValueAt(rawLine, fieldSep, false, 1);
