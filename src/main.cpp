@@ -47,7 +47,7 @@ static bool g_treeIntent = false;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[7];
+static FuncItem g_funcItems[8];
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -55,6 +55,7 @@ static ShortcutKey g_skFold;
 static ShortcutKey g_skNextField;
 static ShortcutKey g_skPrevField;
 static ShortcutKey g_skCheck;
+static ShortcutKey g_skPretty;
 
 // ── Helpers ──
 static HWND getCurrentScintilla() {
@@ -77,10 +78,68 @@ static void initScintillaView(ScintillaView& view, HWND hSci) {
     view.styler.init(hSci, view.fnDirect, view.ptrDirect);
 }
 
+// L9: recognize HL7 by file extension too, so a .hl7 buffer activates even before
+// the first MSH line is fully typed. Uses the current buffer's path.
+static bool currentPathHasHl7Ext() {
+    LRESULT bufId = SendMessage(g_nppData._nppHandle, NPPM_GETCURRENTBUFFERID, 0, 0);
+    if (!bufId) return false;
+    wchar_t path[MAX_PATH]; path[0] = 0;
+    SendMessage(g_nppData._nppHandle, NPPM_GETFULLPATHFROMBUFFERID, (WPARAM)bufId, (LPARAM)path);
+    std::wstring p = path;
+    auto endsWith = [&](const wchar_t* ext) {
+        size_t n = wcslen(ext);
+        if (p.size() < n) return false;
+        for (size_t k = 0; k < n; k++)
+            if (towlower(p[p.size() - n + k]) != towlower(ext[k])) return false;
+        return true;
+    };
+    return endsWith(L".hl7") || endsWith(L".hl7v2");
+}
+
+// Segments that conventionally hang beneath a parent segment (observations, notes,
+// diagnoses, roles, scheduling resources, insurance detail). A run of these folds
+// under the nearest preceding non-detail segment.
+static bool isDetailSegment(const std::wstring& seg) {
+    static const wchar_t* kDetail[] = {
+        L"OBX", L"NTE", L"DG1", L"AL1", L"PR1", L"SPM", L"ROL",
+        L"AIS", L"AIG", L"AIL", L"AIP", L"IN2", L"IN3"
+    };
+    for (const wchar_t* d : kDetail) if (seg == d) return true;
+    return false;
+}
+
+// Set Scintilla fold levels so "Toggle HL7 Folding" (and the fold margin) actually
+// collapse groups: any segment followed by detail segments becomes a fold header.
+static void setFoldLevels(ScintillaView& view) {
+    if (!view.fnDirect) return;
+    SciFnDirect fn = view.fnDirect;
+    sptr_t ptr = view.ptrDirect;
+    int lineCount = (int)fn(ptr, SCI_GETLINECOUNT, 0, 0);
+    int lastHeaderLine = -1;
+
+    for (int li = 0; li < lineCount; li++) {
+        std::wstring wl = getLineW(fn, ptr, li);
+        std::wstring seg = view.lexer.extractSegmentID(wl.c_str(), (int)wl.size());
+
+        if (!seg.empty() && isDetailSegment(seg)) {
+            fn(ptr, SCI_SETFOLDLEVEL, li, SC_FOLDLEVELBASE + 1);
+            if (lastHeaderLine >= 0) {
+                int hl = (int)fn(ptr, SCI_GETFOLDLEVEL, lastHeaderLine, 0);
+                fn(ptr, SCI_SETFOLDLEVEL, lastHeaderLine,
+                   (hl & SC_FOLDLEVELNUMBERMASK) | SC_FOLDLEVELHEADERFLAG);
+            }
+        } else {
+            fn(ptr, SCI_SETFOLDLEVEL, li, SC_FOLDLEVELBASE);
+            lastHeaderLine = li;
+        }
+    }
+}
+
 static void checkAndEnableHL7(ScintillaView& view) {
     if (!view.hWnd || !view.fnDirect) return;
 
-    bool isHL7 = ScintillaStyler::detectHL7(view.hWnd, view.fnDirect, view.ptrDirect);
+    bool isHL7 = ScintillaStyler::detectHL7(view.hWnd, view.fnDirect, view.ptrDirect)
+                 || currentPathHasHl7Ext();
 
     if (isHL7 && !view.isHL7) {
         view.isHL7 = true;
@@ -93,6 +152,7 @@ static void checkAndEnableHL7(ScintillaView& view) {
         int length = (int)view.fnDirect(view.ptrDirect, SCI_GETLENGTH, 0, 0);
         view.fnDirect(view.ptrDirect, SCI_COLOURISE, 0, length - 1);
 
+        setFoldLevels(view);
         g_treeView.refresh(view.hWnd, view.fnDirect, view.ptrDirect, view.lexer, g_segmentDB);
 
     } else if (!isHL7 && view.isHL7) {
@@ -474,6 +534,46 @@ static void cmdCheckConformance() {
     }
 }
 
+// Pretty-print: put every segment on its own line. HL7 messages often arrive as one
+// long line with bare CR segment separators; this normalizes them to CRLF-per-segment
+// so the tree, folding, and reading all work. Wrapped in one undo action.
+static void cmdPrettyPrint() {
+    ScintillaView& view = getCurrentView();
+    if (!view.isHL7 || !view.fnDirect) {
+        MessageBoxW(g_nppData._nppHandle, L"No HL7 document is currently active.",
+                    L"Pretty-Print", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    SciFnDirect fn = view.fnDirect;
+    sptr_t ptr = view.ptrDirect;
+
+    int len = (int)fn(ptr, SCI_GETLENGTH, 0, 0);
+    if (len <= 0) return;
+    std::string buf(static_cast<size_t>(len) + 1, '\0');
+    fn(ptr, SCI_GETTEXT, len + 1, (sptr_t)&buf[0]);
+    buf.resize(len);
+
+    // Split on any CR/LF and rejoin non-empty segments with CRLF.
+    std::string out, cur;
+    auto flush = [&]() {
+        if (!cur.empty()) { if (!out.empty()) out += "\r\n"; out += cur; cur.clear(); }
+    };
+    for (char c : buf) {
+        if (c == '\r' || c == '\n') flush();
+        else cur += c;
+    }
+    flush();
+
+    fn(ptr, SCI_BEGINUNDOACTION, 0, 0);
+    fn(ptr, SCI_SETTEXT, 0, (sptr_t)out.c_str());
+    fn(ptr, SCI_ENDUNDOACTION, 0, 0);
+
+    view.lexer.reset();
+    view.styler.styleAll();
+    setFoldLevels(view);
+    g_treeView.refresh(view.hWnd, view.fnDirect, view.ptrDirect, view.lexer, g_segmentDB);
+}
+
 // ── Menu commands ──
 static void cmdAbout() {
     MessageBoxW(g_nppData._nppHandle,
@@ -562,6 +662,7 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skNextField  = { true, true, false, VK_RIGHT };      // Ctrl+Alt+Right — next field
     g_skPrevField  = { true, true, false, VK_LEFT };       // Ctrl+Alt+Left  — prev field
     g_skCheck      = { true, true, false, 'C' };            // Ctrl+Alt+C  — check conformance
+    g_skPretty     = { true, true, false, 'R' };            // Ctrl+Alt+R  — reformat / pretty-print
 
     g_nbFuncItems = 0;
 
@@ -598,6 +699,13 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_funcItems[g_nbFuncItems]._pShKey = &g_skCheck;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Pretty-Print (segments per line)");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdPrettyPrint;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skPretty;
     g_nbFuncItems++;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Toggle HL7 Folding");
@@ -668,6 +776,7 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
             if (view && view->isHL7) {
                 view->styler.styleAll();
                 view->lexer.reset();
+                setFoldLevels(*view);
 
                 if (notifyCode->length > 0 || notifyCode->linesAdded != 0) {
                     checkAndEnableHL7(*view);

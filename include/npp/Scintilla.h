@@ -41,6 +41,7 @@ typedef sptr_t (*SciFnDirect)(sptr_t ptr, unsigned int iMessage, uptr_t wParam, 
 #define SCI_GETLINECOUNT 2154
 #define SCI_GETLENGTH 2006
 #define SCI_GETTEXT 2182
+#define SCI_SETTEXT 2181
 #define SCI_GETTEXTLENGTH 2183
 #define SCI_GETCHARAT 2007
 #define SCI_GETCURRENTPOS 2008
