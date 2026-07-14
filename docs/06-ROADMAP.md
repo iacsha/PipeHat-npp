@@ -139,6 +139,13 @@ Protocol (MLLP) framing (`<VT>` 0x0B … message … `<FS>` 0x1C `<CR>` 0x0D):
 
 ### P2 — workflow polish
 
+- **Conformance rules GUI** 💡 — a dialog to view/add/edit/delete conformance rules instead
+  of hand-editing `PipeHat.profile`. A dockable or modal editor listing rules as
+  `segment | field | max | allowed-values | required`, with add/remove rows, validation of
+  input, and save back to the profile file. Optional niceties: pick the segment/field from the
+  `SegmentDB` dropdowns, "add rule from current field" (right-click a field → seed a rule from
+  it), and per-interface profile switching. Makes the v1.3 conformance checker approachable for
+  non-text-editors and is the natural next step now that the rule engine and file format exist.
 - **Pretty-print / reformat** — expand a packed message to one-field-per-line and back.
 - **Segment folding** — the menu command exists; set fold levels per segment so it actually collapses.
 - **Copy field path** — right-click a value → copy `PID-5.1` (matches Mirth/BridgeLink channel references).
