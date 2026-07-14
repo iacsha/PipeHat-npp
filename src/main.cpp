@@ -17,6 +17,7 @@
 #include "SciUtils.h"
 #include "ConformanceProfile.h"
 #include "Validator.h"
+#include "MessageDiff.h"
 
 // Scintilla indicator slots for squiggles (0-7 are reserved for lexers).
 #define PIPEHAT_INDIC_CONFORMANCE 18
@@ -49,7 +50,7 @@ static bool g_treeIntent = false;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[10];
+static FuncItem g_funcItems[11];
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -60,6 +61,7 @@ static ShortcutKey g_skCheck;
 static ShortcutKey g_skPretty;
 static ShortcutKey g_skEnable;
 static ShortcutKey g_skValidate;
+static ShortcutKey g_skCompare;
 
 // ── Helpers ──
 static HWND getCurrentScintilla() {
@@ -650,6 +652,71 @@ static void cmdValidate() {
     }
 }
 
+// Compare the current message against the clipboard, segment- and field-aligned,
+// and open the diff in a new tab. The classic interface-troubleshooting workflow:
+// copy a working message, open the broken one, and see exactly what differs.
+static void cmdCompareClipboard() {
+    ScintillaView& view = getCurrentView();
+    if (!view.isHL7 || !view.fnDirect) {
+        MessageBoxW(g_nppData._nppHandle, L"No HL7 document is currently active.",
+                    L"Compare with Clipboard", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    SciFnDirect fn = view.fnDirect;
+    sptr_t ptr = view.ptrDirect;
+
+    // Current message text.
+    int len = (int)fn(ptr, SCI_GETLENGTH, 0, 0);
+    std::string bytes(static_cast<size_t>(len) + 1, '\0');
+    fn(ptr, SCI_GETTEXT, len + 1, (sptr_t)&bytes[0]);
+    bytes.resize(len);
+    std::wstring msgA = utf8ToW(bytes);
+
+    // Clipboard text.
+    std::wstring clip;
+    if (OpenClipboard(g_nppData._nppHandle)) {
+        HANDLE h = GetClipboardData(CF_UNICODETEXT);
+        if (h) {
+            wchar_t* p = (wchar_t*)GlobalLock(h);
+            if (p) { clip = p; GlobalUnlock(h); }
+        }
+        CloseClipboard();
+    }
+    if (clip.empty()) {
+        MessageBoxW(g_nppData._nppHandle,
+            L"The clipboard has no text.\r\n\r\nCopy the message you want to compare "
+            L"against (e.g. a known-good message), then run Compare with Clipboard.",
+            L"Compare with Clipboard", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    // Delimiters from the current message.
+    HL7Lexer lexer;
+    {
+        std::vector<std::wstring> segs = hl7diff::splitSegments(msgA);
+        for (const auto& s : segs)
+            if (lexer.extractSegmentID(s.c_str(), (int)s.size()) == L"MSH") {
+                lexer.parseMSH(s.c_str(), (int)s.size());
+                break;
+            }
+    }
+
+    std::wstring report = hl7diff::diff(msgA, clip,
+                                        lexer.delimiters().fieldSep, lexer.delimiters().compSep);
+
+    // Open the diff in a new document.
+    SendMessage(g_nppData._nppHandle, NPPM_MENUCOMMAND, 0, IDM_FILE_NEW);
+    HWND hNew = getCurrentScintilla();
+    if (hNew) {
+        SciFnDirect nfn = (SciFnDirect)SendMessage(hNew, SCI_GETDIRECTFUNCTION, 0, 0);
+        sptr_t nptr = (sptr_t)SendMessage(hNew, SCI_GETDIRECTPOINTER, 0, 0);
+        if (nfn) {
+            std::string outU8 = wToUtf8(report);
+            nfn(nptr, SCI_SETTEXT, 0, (sptr_t)outU8.c_str());
+        }
+    }
+}
+
 // ── Menu commands ──
 static void cmdAbout() {
     MessageBoxW(g_nppData._nppHandle,
@@ -761,6 +828,7 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skPretty     = { true, true, false, 'R' };            // Ctrl+Alt+R  — reformat / pretty-print
     g_skEnable     = { true, true, false, 'E' };            // Ctrl+Alt+E  — force-enable HL7 mode
     g_skValidate   = { true, true, false, 'V' };            // Ctrl+Alt+V  — validate / malform check
+    g_skCompare    = { true, true, false, 'D' };            // Ctrl+Alt+D  — diff vs clipboard
 
     g_nbFuncItems = 0;
 
@@ -811,6 +879,13 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_funcItems[g_nbFuncItems]._pShKey = &g_skValidate;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Compare with Clipboard");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdCompareClipboard;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skCompare;
     g_nbFuncItems++;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Pretty-Print (segments per line)");

@@ -44,6 +44,10 @@ enum LangType { L_TEXT, L_PHP, L_C, L_CPP, L_CS, L_OBJC, L_JAVA, L_RC,
 #define NPPM_GETBUFFERLANGTYPE (NPPMSG + 64)
 #define NPPM_GETNPPVERSION (NPPMSG + 50)
 #define NPPM_GETPLUGINSCONFIGDIR (NPPMSG + 46)
+#define NPPM_MENUCOMMAND (NPPMSG + 48)
+
+// Notepad++ menu command id (from menuCmdID.h) — used to open a new document.
+#define IDM_FILE_NEW 41001
 
 // Dockable dialog messages
 #define NPPM_DMMREGASDCKDLG (NPPMSG + 33)
