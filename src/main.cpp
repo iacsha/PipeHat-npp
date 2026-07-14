@@ -5,6 +5,8 @@
 #include <cstring>
 #include <cwctype>
 #include <regex>
+#include <fstream>
+#include <iterator>
 #include "npp/PluginInterface.h"
 #include "PluginDefs.h"
 #include "HL7Lexer.h"
@@ -13,6 +15,10 @@
 #include "MessageTreeView.h"
 #include "PHIScrubber.h"
 #include "SciUtils.h"
+#include "ConformanceProfile.h"
+
+// Scintilla indicator slot for conformance squiggles (0-7 are reserved for lexers).
+#define PIPEHAT_INDIC_CONFORMANCE 18
 
 // ── Global state ──
 static NppData g_nppData;
@@ -32,6 +38,7 @@ static ScintillaView g_viewSub;
 static SegmentDB g_segmentDB;
 static MessageTreeView g_treeView;
 static PHIScrubber g_phiScrubber;
+static ConformanceProfile g_profile;
 
 // Tracks whether the user wants the tree panel shown. The panel only actually
 // appears when this is true AND the active buffer is HL7 — so it never auto-loads
@@ -40,13 +47,14 @@ static bool g_treeIntent = false;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[6];
+static FuncItem g_funcItems[7];
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
 static ShortcutKey g_skFold;
 static ShortcutKey g_skNextField;
 static ShortcutKey g_skPrevField;
+static ShortcutKey g_skCheck;
 
 // ── Helpers ──
 static HWND getCurrentScintilla() {
@@ -330,6 +338,142 @@ static void cmdScrubPHI() {
     }
 }
 
+// ── Conformance profiles ──
+static std::string wToUtf8(const std::wstring& ws) {
+    if (ws.empty()) return std::string();
+    int n = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
+    std::string out(n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), &out[0], n, nullptr, nullptr);
+    return out;
+}
+
+// Load the conformance rules from <plugin config dir>\PipeHat.profile, creating a
+// documented default on first run. Rules are per-interface, so this file is the
+// single place a user tunes what "conformant" means for the endpoint they target.
+static void loadProfile() {
+    wchar_t cfgDir[MAX_PATH]; cfgDir[0] = 0;
+    SendMessage(g_nppData._nppHandle, NPPM_GETPLUGINSCONFIGDIR, MAX_PATH, (LPARAM)cfgDir);
+    if (cfgDir[0] == 0) return;
+
+    std::wstring path = std::wstring(cfgDir) + L"\\PipeHat.profile";
+
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        std::string bytes = wToUtf8(ConformanceProfile::defaultFileText());
+        std::ofstream out(path.c_str(), std::ios::binary);
+        if (out) out.write(bytes.data(), (std::streamsize)bytes.size());
+    }
+
+    std::ifstream in(path.c_str(), std::ios::binary);
+    if (!in) return;
+    std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    g_profile.parse(utf8ToW(bytes));
+}
+
+// Check every field in the active message against the conformance profile,
+// squiggle-underline violations, and report them. This is the pre-flight
+// "will the receiver accept this?" check.
+static void cmdCheckConformance() {
+    ScintillaView& view = getCurrentView();
+    if (!view.isHL7 || !view.fnDirect) {
+        MessageBoxW(g_nppData._nppHandle, L"No HL7 document is currently active.",
+                    L"Check Conformance", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    if (g_profile.ruleCount() == 0) {
+        MessageBoxW(g_nppData._nppHandle,
+            L"No conformance rules are defined.\r\n\r\n"
+            L"Edit PipeHat.profile in the Notepad++ plugin config folder "
+            L"(Plugins > Open Plugins Folder, or %AppData%\\Notepad++\\plugins\\config) "
+            L"to add rules like:\r\n\r\n"
+            L"    PID-8.values=M,F,O,U,A,N\r\n"
+            L"    PID-5.max=48\r\n\r\n"
+            L"Then re-run Check Conformance.",
+            L"Check Conformance", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    SciFnDirect fn = view.fnDirect;
+    sptr_t ptr = view.ptrDirect;
+
+    // Configure and clear the squiggle indicator across the whole document.
+    fn(ptr, SCI_SETINDICATORCURRENT, PIPEHAT_INDIC_CONFORMANCE, 0);
+    fn(ptr, SCI_INDICSETSTYLE, PIPEHAT_INDIC_CONFORMANCE, INDIC_SQUIGGLE);
+    fn(ptr, SCI_INDICSETFORE, PIPEHAT_INDIC_CONFORMANCE, 0x0000FF); // red (BGR)
+    int docLen = (int)fn(ptr, SCI_GETLENGTH, 0, 0);
+    fn(ptr, SCI_INDICATORCLEARRANGE, 0, docLen);
+
+    HL7Lexer lexer;
+    int lineCount = (int)fn(ptr, SCI_GETLINECOUNT, 0, 0);
+    for (int li = 0; li < lineCount; li++) {
+        std::wstring wl = getLineW(fn, ptr, li);
+        if (wl.empty()) continue;
+        if (lexer.extractSegmentID(wl.c_str(), (int)wl.size()) == L"MSH") {
+            lexer.parseMSH(wl.c_str(), (int)wl.size());
+            break;
+        }
+    }
+    wchar_t fieldSep = lexer.delimiters().fieldSep;
+    wchar_t compSep  = lexer.delimiters().compSep;
+
+    std::wstring report;
+    int violations = 0;
+
+    for (int li = 0; li < lineCount; li++) {
+        int lineStart = (int)fn(ptr, SCI_POSITIONFROMLINE, li, 0);
+        std::wstring wlStr = getLineW(fn, ptr, li);
+        if (wlStr.size() < 3) continue;
+        const wchar_t* wl = wlStr.c_str();
+
+        std::wstring segId = lexer.extractSegmentID(wl, (int)wlStr.size());
+        if (segId.empty()) continue;
+        bool isMSH = (segId == L"MSH");
+
+        // Split the line into fields by the field separator, tracking each field's
+        // wchar range. seg[0] is the segment id; MSH is offset by one (MSH-1 is the
+        // separator) so seg[k] is MSH-(k+1).
+        size_t pos = 0;
+        int k = 0;
+        while (pos <= wlStr.size()) {
+            size_t sep = wlStr.find(fieldSep, pos);
+            size_t end = (sep == std::wstring::npos) ? wlStr.size() : sep;
+            if (k >= 1) {
+                int fieldIdx = isMSH ? (k + 1) : k;
+                std::wstring val = wlStr.substr(pos, end - pos);
+                std::wstring v = g_profile.check(segId, fieldIdx, val, compSep);
+                if (!v.empty()) {
+                    violations++;
+                    int prefixBytes = WideCharToMultiByte(CP_UTF8, 0, wl, (int)pos, nullptr, 0, nullptr, nullptr);
+                    int tokBytes = WideCharToMultiByte(CP_UTF8, 0, wl + pos, (int)(end - pos), nullptr, 0, nullptr, nullptr);
+                    if (prefixBytes >= 0 && tokBytes > 0) {
+                        fn(ptr, SCI_SETINDICATORCURRENT, PIPEHAT_INDIC_CONFORMANCE, 0);
+                        fn(ptr, SCI_INDICATORFILLRANGE, lineStart + prefixBytes, tokBytes);
+                    }
+                    if (violations <= 25) {
+                        report += L"Line " + std::to_wstring(li + 1) + L": " + v + L"\r\n";
+                    }
+                }
+            }
+            if (sep == std::wstring::npos) break;
+            pos = sep + 1;
+            k++;
+        }
+    }
+
+    if (violations == 0) {
+        wchar_t msg[128];
+        swprintf_s(msg, L"No conformance violations found (%zu rule(s) checked).",
+                   g_profile.ruleCount());
+        MessageBoxW(g_nppData._nppHandle, msg, L"Check Conformance", MB_OK | MB_ICONINFORMATION);
+    } else {
+        std::wstring out = L"Found " + std::to_wstring(violations) +
+                           L" conformance violation(s):\r\n\r\n" + report;
+        if (violations > 25) out += L"\r\n(showing first 25)";
+        out += L"\r\n\r\nViolating fields are squiggle-underlined in the editor.";
+        MessageBoxW(g_nppData._nppHandle, out.c_str(),
+                    L"Check Conformance \x2014 Violations", MB_OK | MB_ICONWARNING);
+    }
+}
+
 // ── Menu commands ──
 static void cmdAbout() {
     MessageBoxW(g_nppData._nppHandle,
@@ -414,6 +558,7 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skFold       = { true, true, false, 'F' };            // Ctrl+Alt+F  — toggle folding
     g_skNextField  = { true, true, false, VK_RIGHT };      // Ctrl+Alt+Right — next field
     g_skPrevField  = { true, true, false, VK_LEFT };       // Ctrl+Alt+Left  — prev field
+    g_skCheck      = { true, true, false, 'C' };            // Ctrl+Alt+C  — check conformance
 
     g_nbFuncItems = 0;
 
@@ -443,6 +588,13 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_funcItems[g_nbFuncItems]._pShKey = &g_skPrevField;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Check Conformance");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdCheckConformance;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skCheck;
     g_nbFuncItems++;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Toggle HL7 Folding");
@@ -486,6 +638,7 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
         case NPPN_READY: {
             ScintillaView& view = getCurrentView();
             checkAndEnableHL7(view);
+            loadProfile();
             g_treeView.create((HINSTANCE)g_hModule, g_nppData._nppHandle, &g_nppData);
             // Force the panel hidden at startup regardless of any dock state
             // Notepad++ restored from the previous session (g_treeIntent is false).
