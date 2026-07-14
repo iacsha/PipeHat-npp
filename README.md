@@ -27,18 +27,28 @@ knows by heart.
 - **Conformance checking** — validate a message against per-interface rules (max field
   length, allowed value sets, required fields) defined in an editable profile. Violations
   are squiggle-underlined and listed — a pre-flight *"will the receiver accept this?"* check.
+- **Structural validation** — advisory malform detection: missing MSH, invalid segment IDs,
+  empty required MSH fields, unterminated escape sequences. Never blocking.
+- **Compare / diff** — segment- and field-aware diff of the current message against the
+  clipboard, opened in a new tab (ignores volatile MSH-7 datetime / MSH-10 control ID).
+- **Pretty-print** — put every segment on its own line (fixes single-line CR-delimited
+  messages), and **folding** to collapse detail-segment groups (OBX/NTE under their parent).
+- **Version & escape decoding** — MSH-12 shows the HL7 version + era; escape sequences
+  (`\F\ \S\ \T\ \Xhh\` …) are decoded on hover.
 
-The plugin activates automatically when a buffer's **first line starts with `MSH`**.
+The plugin activates automatically on HL7 **content** (first non-blank segment is `MSH`,
+`FHS`, or `BHS`) or a **`.hl7` file**. You can also force it on any buffer with
+*Enable HL7 Highlighting* (`Ctrl+Alt+E`).
 
 ## Keyboard shortcuts
 
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+Alt+T` | Toggle the message tree panel |
-| `Ctrl+Alt+H` | Scrub PHI |
-| `Ctrl+Alt+C` | Check conformance |
-| `Ctrl+Alt+F` | Toggle HL7 folding |
-| `Ctrl+Alt+←` / `Ctrl+Alt+→` | Jump to previous / next field |
+| Shortcut | Action | Shortcut | Action |
+|----------|--------|----------|--------|
+| `Ctrl+Alt+T` | Toggle message tree | `Ctrl+Alt+V` | Validate message |
+| `Ctrl+Alt+H` | Scrub PHI | `Ctrl+Alt+D` | Compare with clipboard |
+| `Ctrl+Alt+C` | Check conformance | `Ctrl+Alt+R` | Pretty-print / reformat |
+| `Ctrl+Alt+F` | Toggle folding | `Ctrl+Alt+E` | Enable HL7 highlighting |
+| `Ctrl+Alt+←` / `→` | Previous / next field | | |
 
 Any conflicts can be remapped in *Settings → Shortcut Mapper → Plugin commands*.
 
@@ -143,10 +153,11 @@ Violating fields are squiggle-underlined in the editor and listed in a summary d
 
 ## Status
 
-**v1.1.0.** Crash-class defects and the fail-open PHI leak from the initial review are fixed
-and build-verified. v1.1 adds trigger-event decoding, HIPAA Safe Harbor scrubber coverage,
-configurable conformance checking, navigation hotkeys, and smarter panel behavior. See the
-roadmap for what's next.
+**v1.2.0.** Crash-class defects and the fail-open PHI leak from the initial review are fixed
+and build-verified. v1.1 added trigger-event decoding, HIPAA Safe Harbor scrubber coverage,
+conformance checking, hotkeys, and smarter panel behavior; v1.2 adds structural validation,
+message compare/diff, escape + HL7-version decoding, pretty-print, folding, and broader
+activation. Each feature is verified by a standalone test. See the roadmap for what's next.
 
 ---
 

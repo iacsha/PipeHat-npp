@@ -35,7 +35,26 @@
 | Panel behavior | Tree no longer auto-loads on startup; follows the active buffer and closes with the HL7 message | ✅ |
 
 **Still open from these areas:** M8 remainder (age > 89, anonymize-mode structural coverage
-check), conformance in hover tooltips + tree problem-list, and full HL7 version awareness.
+check), conformance in hover tooltips + tree problem-list.
+
+---
+
+## Shipped (v1.2.0)
+
+| Item | What | Status |
+|------|------|--------|
+| Escape decoding | `HL7Escape.h` — `\F\ \S\ \T\ \R\ \E\ \.br\ \Xhh\` decoded on hover | ✅ |
+| HL7 version awareness | MSH-12 → version name + era in tooltip/tree (`versionName`) | ✅ |
+| Validation / malform | `Validator.h` + Validate command (Ctrl+Alt+V); advisory squiggles | ✅ |
+| Message compare/diff | `MessageDiff.h` + Compare-with-clipboard (Ctrl+Alt+D); segment/field aligned, new-tab report | ✅ |
+| Pretty-print | Segments-per-line reformat (Ctrl+Alt+R) | ✅ |
+| Segment folding | `setFoldLevels` — detail segments fold under their parent | ✅ |
+| Broader activation | MSH/FHS/BHS + BOM/blank-line skip; `.hl7` ext; manual Enable (Ctrl+Alt+E) | ✅ |
+| Small fixes | Tree-nav off-by-one (L11); retired unused `sciGetLine` | ✅ |
+
+**Note:** *Version awareness* here is detection + surfacing of MSH-12, not per-version field
+tables (that remains the P2 data-driven-tables item). *Validation* is the built-in structural
+half; *conformance profiles* (v1.1) are the configurable half.
 
 ---
 

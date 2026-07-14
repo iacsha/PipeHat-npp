@@ -720,12 +720,13 @@ static void cmdCompareClipboard() {
 // ── Menu commands ──
 static void cmdAbout() {
     MessageBoxW(g_nppData._nppHandle,
-        L"PipeHat v1.1.0 \x2014 HL7 v2.x for Notepad++\r\n\r\n"
-        L"Syntax highlighting, field tooltips (with trigger-event decoding),\r\n"
-        L"message tree view, PHI scrubbing, and conformance checking.\r\n\r\n"
-        L"Hotkeys: Ctrl+Alt+T tree, Ctrl+Alt+H scrub, Ctrl+Alt+C check,\r\n"
-        L"Ctrl+Alt+Left/Right field nav \x2014 see the Plugins menu.\r\n"
-        L"Activates for buffers whose first line starts with MSH.",
+        L"PipeHat v1.2.0 \x2014 HL7 v2.x for Notepad++\r\n\r\n"
+        L"Highlighting, tooltips (trigger-event + version + escape decode),\r\n"
+        L"message tree, PHI scrubbing, conformance + structural validation,\r\n"
+        L"compare/diff, pretty-print, and folding.\r\n\r\n"
+        L"Hotkeys (Ctrl+Alt+ ...): T tree, H scrub, C check, V validate,\r\n"
+        L"D diff, R reformat, E enable, F fold, Left/Right field nav.\r\n"
+        L"Activates on MSH/FHS/BHS content or a .hl7 file.",
         L"About PipeHat", MB_OK | MB_ICONINFORMATION);
 }
 
