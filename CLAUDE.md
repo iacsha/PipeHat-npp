@@ -90,7 +90,24 @@ Three layers, each isolated:
   `PostMessage` (`WM_MLLP_RECEIVED` / `WM_MLLP_ACK_RESULT`) and the UI thread does the NPP work.
   Config persists to `PipeHat.ini` (`loadMllpConfig`/`saveMllpConfig`). Menu: **Send Message
   (MLLP)** Ctrl+Alt+M, **Toggle MLLP Listener** Ctrl+Alt+L (checkmark via
-  `NPPM_SETMENUITEMCHECK`). **14 menu items** total.
+  `NPPM_SETMENUITEMCHECK`). **19 menu items** total.
+
+### v1.3.x additions (post-MLLP)
+
+- **PHI hardening:** `generateFake` is deterministic (seeds from a hash of the original → referential
+  integrity; standalone-tested); `cmdScrubPHI` runs an anonymize-mode coverage check (independent
+  raw-split pass confirms every PHI field was replaced, fail-closed). MSH-7 added to the date map.
+- **M7 incremental styling:** `SCN_MODIFIED` re-styles only the edited line range (MSH-line edit →
+  full restyle). Fold/detect only on `linesAdded`.
+- **Caret helper `analyzeCaretField`** → HL7 path + field byte range, reused by **Copy Field Path**
+  (Ctrl+Alt+K), **current-field highlight** (indicator **21**, on `SCN_UPDATEUI`+`SC_UPDATE_SELECTION`),
+  and **Add Conformance Rule from Field** (seeds the rule editor via `SettingsDialog::runModal`'s seed params).
+- **Compare Views** (Ctrl+Alt+D) replaced clipboard compare: diffs the two Notepad++ views, boxing
+  differing fields in both panes with indicator **20** (`indexDocForDiff`).
+- **Copy as Rich Text** (Ctrl+Alt+W): `buildRtf` → `CF_RTF` clipboard.
+- **Event log** (`logEvent` → `PipeHat.log`, menu: Open Event Log): PHI-aware metadata only.
+- **Check for Updates** (`UpdateCheck.{h,cpp}`, WinHTTP, isolated + in CMake): user-initiated GitHub
+  release check on a worker thread → `WM_UPDATE_RESULT`. Links `winhttp`, `shell32`.
 
 **MLLP invariants — do not regress:** networking is OFF by default; binds are loopback-only
 unless the user opts in *and* provides an address (`MllpConfig::effectiveBindAddr` fails safe);

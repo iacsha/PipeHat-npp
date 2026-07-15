@@ -61,7 +61,13 @@ diff). Prefer this pattern for the next feature.
 - Scintilla indicator slots: **18** = conformance squiggles, **19** = validation squiggles
   (0–7 are reserved for lexers). Pick 20+ for new indicators.
 - Menu commands live in `getFuncsArray` with static `ShortcutKey` objects (Ctrl+Alt+ combos);
-  bump `g_funcItems[N]` when adding one. There are **14** items (v1.3.0 + MLLP).
+  bump `g_funcItems[N]` when adding one. There are **19** items.
+- Scintilla indicator slots in use: **18** conformance, **19** validation, **20** compare-diff,
+  **21** current-field highlight. Pick 22+ for new ones.
+- Non-header-only modules (need CMake wiring): `SettingsDialog.{h,cpp}`, `MllpTransport.{h,cpp}`,
+  `UpdateCheck.{h,cpp}` (WinHTTP, isolated). `main.cpp`'s hidden `HWND_MESSAGE` window marshals
+  worker/listener results (MLLP receive/ACK, update check) onto the UI thread.
+- `logEvent` (PHI-aware, metadata only) → `PipeHat.log`; wire new outward/networked actions into it.
 
 ## MLLP networking (v2.0, unreleased) — the only network feature
 
