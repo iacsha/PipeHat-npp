@@ -68,10 +68,15 @@ recent feature that is **not** header-only — it needs `.rc` dialog templates, 
 in `CMakeLists.txt`. Dialog resource IDs live in `src/resource.h` (shared by `resource.rc` and
 the dialog code): the dockable tree panel keeps dialog ID **1** (empty template, controls built
 in code); `IDD_SETTINGS = 2` and `IDD_RULE = 3` are the modal conformance-rule editor and its
-single-rule sub-dialog. The editor reads/writes the same `PipeHat.profile` `loadProfile()`
-parses — on save it regenerates the rule lines from the grid (preserving the documented header)
-and `cmdSettings` reloads the profile so Check Conformance updates without a restart. The
+single-rule sub-dialog. On save the editor regenerates rule lines from the grid (preserving the
+documented header) and `cmdSettings` reloads so Check Conformance updates without a restart. The
 Settings dialog also hosts the MLLP network section (in/out via an `MllpConfig&`).
+
+**Conformance profiles are named/switchable:** `PipeHat.profile` (default) plus `PipeHat.<name>.profile`
+per interface. `runModal` takes the config dir + an in/out active-profile name (not a single path);
+the dialog's profile combo + *New* button manage the files, the active name persists in `PipeHat.ini`
+`[Conformance] ActiveProfile`, and `loadProfile`/`activeProfilePath` load the active one. The rule
+editor's segment/field inputs are `SegmentDB`-backed dropdowns (passed via `runModal`'s `SegmentDB*`).
 
 ### MLLP over TCP (v2.0, unreleased — the plugin's only network feature)
 
