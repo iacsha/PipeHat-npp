@@ -1,6 +1,7 @@
 #include "SettingsDialog.h"
 #include "resource.h"
 #include "ConformanceProfile.h"   // reuse defaultFileText() as the saved header
+#include "SegmentDB.h"            // populate the rule editor's dropdowns
 #include <commctrl.h>
 #include <windowsx.h>
 #include <fstream>
@@ -30,6 +31,7 @@ Rule              g_editResult;        // handed back from the rule editor
 MllpConfig*       g_cfg = nullptr;     // MLLP settings being edited (not owned)
 std::wstring      g_seedSeg;           // "add rule from field": pre-seed the rule editor
 int               g_seedField = 0;
+const SegmentDB*  g_segDb = nullptr;   // populates the rule editor dropdowns (not owned)
 
 // ── small text helpers ──
 std::wstring utf8ToW(const std::string& s) {
@@ -180,6 +182,26 @@ std::wstring getText(HWND h, int id) {
     return trim(buf);
 }
 
+// ── rule editor dropdowns (SegmentDB-backed) ──
+void populateSegCombo(HWND hDlg) {
+    HWND c = GetDlgItem(hDlg, IDC_RULE_SEG);
+    SendMessageW(c, CB_RESETCONTENT, 0, 0);
+    if (!g_segDb) return;
+    for (const auto& s : g_segDb->allSegments())
+        SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)s.id.c_str());
+}
+void populateFieldCombo(HWND hDlg, const std::wstring& seg) {
+    HWND c = GetDlgItem(hDlg, IDC_RULE_FIELD);
+    SendMessageW(c, CB_RESETCONTENT, 0, 0);
+    if (!g_segDb) return;
+    const HL7SegmentDef* def = g_segDb->lookup(seg);
+    if (!def) return;
+    for (const auto& f : def->fields) {
+        std::wstring item = std::to_wstring(f.position) + L"  " + f.name;
+        SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)item.c_str());
+    }
+}
+
 // ── MLLP section of the settings dialog ──
 void populateMllp(HWND hDlg) {
     if (!g_cfg) return;
@@ -216,7 +238,9 @@ INT_PTR CALLBACK ruleProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM) {
                 r.seg = g_seedSeg; r.field = g_seedField;   // seeded from current field
                 g_seedSeg.clear(); g_seedField = 0;         // consume once
             }
+            populateSegCombo(hDlg);
             SetDlgItemTextW(hDlg, IDC_RULE_SEG, r.seg.c_str());
+            populateFieldCombo(hDlg, r.seg);
             if (r.field > 0)
                 SetDlgItemTextW(hDlg, IDC_RULE_FIELD, std::to_wstring(r.field).c_str());
             setChecked(hDlg, IDC_RULE_MAXCHK, r.hasMax);
@@ -230,6 +254,17 @@ INT_PTR CALLBACK ruleProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM) {
             return TRUE;
         }
         case WM_COMMAND: {
+            // Segment picked from the dropdown → refresh the field list for it.
+            if (LOWORD(wParam) == IDC_RULE_SEG && HIWORD(wParam) == CBN_SELCHANGE) {
+                HWND c = GetDlgItem(hDlg, IDC_RULE_SEG);
+                int sel = (int)SendMessageW(c, CB_GETCURSEL, 0, 0);
+                if (sel >= 0) {
+                    wchar_t b[16] = { 0 };
+                    SendMessageW(c, CB_GETLBTEXT, sel, (LPARAM)b);
+                    populateFieldCombo(hDlg, b);
+                }
+                return TRUE;
+            }
             switch (LOWORD(wParam)) {
                 case IDC_RULE_MAXCHK:
                     EnableWindow(GetDlgItem(hDlg, IDC_RULE_MAX), isChecked(hDlg, IDC_RULE_MAXCHK));
@@ -239,6 +274,7 @@ INT_PTR CALLBACK ruleProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM) {
                     return TRUE;
                 case IDOK: {
                     std::wstring seg = getText(hDlg, IDC_RULE_SEG);
+                    if (!seg.empty()) CharUpperBuffW(&seg[0], (DWORD)seg.size());  // combos lack ES_UPPERCASE
                     int field = _wtoi(getText(hDlg, IDC_RULE_FIELD).c_str());
                     if (seg.size() < 2 || seg.size() > 4) {
                         MessageBoxW(hDlg, L"Enter a segment ID of 2\x2013""4 characters (e.g. PID, MSH, ZAL).",
@@ -388,11 +424,13 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 namespace SettingsDialog {
 
 bool runModal(HINSTANCE hInst, HWND hParent, const std::wstring& profilePath,
-              MllpConfig& cfg, const std::wstring& seedSeg, int seedField) {
+              MllpConfig& cfg, const std::wstring& seedSeg, int seedField,
+              const SegmentDB* segDb) {
     g_path = profilePath;
     g_cfg = &cfg;
     g_seedSeg = seedSeg;
     g_seedField = seedField;
+    g_segDb = segDb;
 
     INITCOMMONCONTROLSEX icc;
     icc.dwSize = sizeof(icc);
@@ -402,6 +440,7 @@ bool runModal(HINSTANCE hInst, HWND hParent, const std::wstring& profilePath,
     INT_PTR r = DialogBoxParamW(hInst, MAKEINTRESOURCEW(IDD_SETTINGS), hParent, settingsProc, 0);
     g_cfg = nullptr;
     g_seedSeg.clear(); g_seedField = 0;
+    g_segDb = nullptr;
     return (r == IDOK);
 }
 

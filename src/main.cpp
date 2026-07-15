@@ -584,7 +584,8 @@ static void cmdSettings() {
         if (out) out.write(bytes.data(), (std::streamsize)bytes.size());
     }
 
-    if (SettingsDialog::runModal((HINSTANCE)g_hModule, g_nppData._nppHandle, path, g_mllp)) {
+    if (SettingsDialog::runModal((HINSTANCE)g_hModule, g_nppData._nppHandle, path, g_mllp,
+                                 std::wstring(), 0, &g_segmentDB)) {
         loadProfile();
         saveMllpConfig();
         // If networking was switched off while the listener is up, stop it now.
@@ -1451,7 +1452,8 @@ static void cmdAddRuleFromField() {
     }
 
     logEvent(L"CONFORMANCE", L"Add rule from field " + seg + L"-" + std::to_wstring(fieldNo));
-    if (SettingsDialog::runModal((HINSTANCE)g_hModule, g_nppData._nppHandle, path, g_mllp, seg, fieldNo)) {
+    if (SettingsDialog::runModal((HINSTANCE)g_hModule, g_nppData._nppHandle, path, g_mllp,
+                                 seg, fieldNo, &g_segmentDB)) {
         loadProfile();
         saveMllpConfig();
         if (!g_mllp.enabled && g_listener.running()) { g_listener.stop(); updateListenerCheck(); }

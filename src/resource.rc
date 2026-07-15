@@ -55,9 +55,11 @@ CAPTION "Conformance Rule"
 FONT 8, "MS Shell Dlg"
 BEGIN
     LTEXT           "Segment:", -1, 7, 10, 44, 10
-    EDITTEXT        IDC_RULE_SEG, 66, 8, 52, 12, ES_UPPERCASE | ES_AUTOHSCROLL
-    LTEXT           "Field #:", -1, 7, 27, 44, 10
-    EDITTEXT        IDC_RULE_FIELD, 66, 25, 44, 12, ES_NUMBER | ES_AUTOHSCROLL
+    COMBOBOX        IDC_RULE_SEG, 66, 8, 60, 90,
+                    CBS_DROPDOWN | CBS_AUTOHSCROLL | CBS_SORT | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Field #:", -1, 7, 29, 44, 10
+    COMBOBOX        IDC_RULE_FIELD, 66, 25, 140, 120,
+                    CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
     AUTOCHECKBOX    "Max length", IDC_RULE_MAXCHK, 7, 45, 55, 10
     EDITTEXT        IDC_RULE_MAX, 66, 43, 44, 12, ES_NUMBER | ES_AUTOHSCROLL
     AUTOCHECKBOX    "Allowed values (comma-separated)", IDC_RULE_VALCHK, 7, 62, 160, 10
