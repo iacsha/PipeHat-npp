@@ -18,11 +18,15 @@ STYLE DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMEN
 CAPTION "PipeHat Settings"
 FONT 8, "MS Shell Dlg"
 BEGIN
-    LTEXT           "Conformance rules that Check Conformance applies to the active message. One row per segment-field.",
-                    -1, 7, 6, 330, 16
+    LTEXT           "Profile:", -1, 7, 9, 28, 10
+    COMBOBOX        IDC_PROFILE, 38, 7, 150, 120,
+                    CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "&New", IDC_PROFILE_NEW, 192, 6, 44, 14
+    LTEXT           "Rules for the selected profile. Switch or create per-interface profiles above.",
+                    -1, 7, 24, 330, 10
     CONTROL         "", IDC_RULE_LIST, "SysListView32",
                     LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP,
-                    7, 24, 330, 120
+                    7, 36, 330, 108
     PUSHBUTTON      "&Add...", IDC_RULE_ADD, 7, 148, 52, 14
     PUSHBUTTON      "&Edit...", IDC_RULE_EDIT, 63, 148, 52, 14
     PUSHBUTTON      "&Remove", IDC_RULE_REMOVE, 119, 148, 52, 14
@@ -44,8 +48,8 @@ BEGIN
 
     DEFPUSHBUTTON   "&Save", IDOK, 229, 300, 52, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 285, 300, 52, 14
-    LTEXT           "Rules -> PipeHat.profile, network -> PipeHat.ini (plugin config folder).",
-                    -1, 7, 304, 260, 10
+    LTEXT           "Profiles: PipeHat[.name].profile; network: PipeHat.ini (plugin config folder).",
+                    -1, 7, 304, 300, 10
 END
 
 // Dialog 3 (IDD_RULE) — add or edit a single conformance rule.

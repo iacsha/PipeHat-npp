@@ -22,6 +22,10 @@
 #define IDC_RULE_VALUES   1015
 #define IDC_RULE_REQ      1016
 
+// Conformance profile selector (IDD_SETTINGS)
+#define IDC_PROFILE       1030
+#define IDC_PROFILE_NEW   1031
+
 // MLLP (network) section of the settings dialog (IDD_SETTINGS)
 #define IDC_MLLP_ENABLE       1020
 #define IDC_MLLP_HOST         1021

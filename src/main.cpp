@@ -59,6 +59,7 @@ static SegmentDB g_segmentDB;
 static MessageTreeView g_treeView;
 static PHIScrubber g_phiScrubber;
 static ConformanceProfile g_profile;
+static std::wstring g_activeProfile;   // active conformance profile name ("" = default)
 
 // ── MLLP networking (off by default; see MllpConfig) ──
 static MllpConfig        g_mllp;
@@ -544,12 +545,23 @@ static std::string wToUtf8(const std::wstring& ws) {
 // Load the conformance rules from <plugin config dir>\PipeHat.profile, creating a
 // documented default on first run. Rules are per-interface, so this file is the
 // single place a user tunes what "conformant" means for the endpoint they target.
-static void loadProfile() {
-    wchar_t cfgDir[MAX_PATH]; cfgDir[0] = 0;
-    SendMessage(g_nppData._nppHandle, NPPM_GETPLUGINSCONFIGDIR, MAX_PATH, (LPARAM)cfgDir);
-    if (cfgDir[0] == 0) return;
+static std::wstring configDirW() {
+    wchar_t d[MAX_PATH]; d[0] = 0;
+    SendMessage(g_nppData._nppHandle, NPPM_GETPLUGINSCONFIGDIR, MAX_PATH, (LPARAM)d);
+    return d[0] ? std::wstring(d) : std::wstring();
+}
 
-    std::wstring path = std::wstring(cfgDir) + L"\\PipeHat.profile";
+// Path of the active conformance profile (default = PipeHat.profile).
+static std::wstring activeProfilePath() {
+    std::wstring dir = configDirW();
+    if (dir.empty()) return std::wstring();
+    return g_activeProfile.empty() ? dir + L"\\PipeHat.profile"
+                                   : dir + L"\\PipeHat." + g_activeProfile + L".profile";
+}
+
+static void loadProfile() {
+    std::wstring path = activeProfilePath();
+    if (path.empty()) return;
 
     if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
         std::string bytes = wToUtf8(ConformanceProfile::defaultFileText());
@@ -563,29 +575,19 @@ static void loadProfile() {
     g_profile.parse(utf8ToW(bytes));
 }
 
-// Open the settings GUI (conformance-rule editor). It reads and writes the same
-// PipeHat.profile that loadProfile() consumes; on save we reload so Check
-// Conformance immediately reflects the edits without a restart.
+// Open the settings GUI (conformance-rule editor + MLLP + profiles). On save we
+// reload the active profile so Check Conformance reflects edits without a restart.
 static void cmdSettings() {
-    wchar_t cfgDir[MAX_PATH]; cfgDir[0] = 0;
-    SendMessage(g_nppData._nppHandle, NPPM_GETPLUGINSCONFIGDIR, MAX_PATH, (LPARAM)cfgDir);
-    if (cfgDir[0] == 0) {
+    std::wstring dir = configDirW();
+    if (dir.empty()) {
         MessageBoxW(g_nppData._nppHandle,
             L"Could not locate the Notepad++ plugin config folder.",
             L"PipeHat Settings", MB_OK | MB_ICONERROR);
         return;
     }
-    std::wstring path = std::wstring(cfgDir) + L"\\PipeHat.profile";
 
-    // Seed the documented default so the editor opens against a real file.
-    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        std::string bytes = wToUtf8(ConformanceProfile::defaultFileText());
-        std::ofstream out(path.c_str(), std::ios::binary);
-        if (out) out.write(bytes.data(), (std::streamsize)bytes.size());
-    }
-
-    if (SettingsDialog::runModal((HINSTANCE)g_hModule, g_nppData._nppHandle, path, g_mllp,
-                                 std::wstring(), 0, &g_segmentDB)) {
+    if (SettingsDialog::runModal((HINSTANCE)g_hModule, g_nppData._nppHandle, dir,
+                                 g_activeProfile, g_mllp, std::wstring(), 0, &g_segmentDB)) {
         loadProfile();
         saveMllpConfig();
         // If networking was switched off while the listener is up, stop it now.
@@ -617,6 +619,7 @@ static void loadMllpConfig() {
     g_mllp.listenPort = GetPrivateProfileIntW(L"MLLP", L"ListenPort", 2575, ini.c_str());
     g_mllp.allowNonLoopback = GetPrivateProfileIntW(L"MLLP", L"AllowNonLoopback", 0, ini.c_str()) != 0;
     GetPrivateProfileStringW(L"MLLP", L"BindAddr", L"127.0.0.1", buf, 256, ini.c_str()); g_mllp.bindAddr = buf;
+    GetPrivateProfileStringW(L"Conformance", L"ActiveProfile", L"", buf, 256, ini.c_str()); g_activeProfile = buf;
 }
 
 static void saveMllpConfig() {
@@ -628,6 +631,7 @@ static void saveMllpConfig() {
     WritePrivateProfileStringW(L"MLLP", L"ListenPort", std::to_wstring(g_mllp.listenPort).c_str(), ini.c_str());
     WritePrivateProfileStringW(L"MLLP", L"AllowNonLoopback", g_mllp.allowNonLoopback ? L"1" : L"0", ini.c_str());
     WritePrivateProfileStringW(L"MLLP", L"BindAddr", g_mllp.bindAddr.c_str(), ini.c_str());
+    WritePrivateProfileStringW(L"Conformance", L"ActiveProfile", g_activeProfile.c_str(), ini.c_str());
 }
 
 // Unique-ish control id for ACKs we generate (listener side). Called on the
@@ -1441,19 +1445,12 @@ static void cmdAddRuleFromField() {
     int fieldNo = _wtoi((dot == std::wstring::npos ? rest : rest.substr(0, dot)).c_str());
     if (seg.empty() || fieldNo <= 0) return;
 
-    wchar_t cfgDir[MAX_PATH]; cfgDir[0] = 0;
-    SendMessage(g_nppData._nppHandle, NPPM_GETPLUGINSCONFIGDIR, MAX_PATH, (LPARAM)cfgDir);
-    if (cfgDir[0] == 0) return;
-    std::wstring path = std::wstring(cfgDir) + L"\\PipeHat.profile";
-    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        std::string bytes = wToUtf8(ConformanceProfile::defaultFileText());
-        std::ofstream out(path.c_str(), std::ios::binary);
-        if (out) out.write(bytes.data(), (std::streamsize)bytes.size());
-    }
+    std::wstring dir = configDirW();
+    if (dir.empty()) return;
 
     logEvent(L"CONFORMANCE", L"Add rule from field " + seg + L"-" + std::to_wstring(fieldNo));
-    if (SettingsDialog::runModal((HINSTANCE)g_hModule, g_nppData._nppHandle, path, g_mllp,
-                                 seg, fieldNo, &g_segmentDB)) {
+    if (SettingsDialog::runModal((HINSTANCE)g_hModule, g_nppData._nppHandle, dir,
+                                 g_activeProfile, g_mllp, seg, fieldNo, &g_segmentDB)) {
         loadProfile();
         saveMllpConfig();
         if (!g_mllp.enabled && g_listener.running()) { g_listener.stop(); updateListenerCheck(); }

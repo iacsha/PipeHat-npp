@@ -8,6 +8,7 @@
 #include <iterator>
 #include <string>
 #include <vector>
+#include <cwctype>
 
 namespace {
 
@@ -32,6 +33,10 @@ MllpConfig*       g_cfg = nullptr;     // MLLP settings being edited (not owned)
 std::wstring      g_seedSeg;           // "add rule from field": pre-seed the rule editor
 int               g_seedField = 0;
 const SegmentDB*  g_segDb = nullptr;   // populates the rule editor dropdowns (not owned)
+std::wstring      g_configDir;         // folder holding PipeHat[.name].profile files
+std::wstring*     g_activeProfilePtr = nullptr;  // in/out active profile name ("" = default)
+std::wstring      g_curDisplay;        // profile display name currently shown
+const wchar_t*    kDefaultDisplay = L"(default)";
 
 // ── small text helpers ──
 std::wstring utf8ToW(const std::string& s) {
@@ -338,6 +343,55 @@ void editRule(HWND hParent, HINSTANCE hInst, HWND hList) {
     populateList(hList);
 }
 
+// ── named/switchable profiles ──
+std::wstring nameFromDisplay(const std::wstring& disp) {
+    return (disp == kDefaultDisplay) ? std::wstring() : disp;
+}
+std::wstring displayFromName(const std::wstring& name) {
+    return name.empty() ? std::wstring(kDefaultDisplay) : name;
+}
+std::wstring profilePathForDisplay(const std::wstring& disp) {
+    if (disp == kDefaultDisplay || disp.empty())
+        return g_configDir + L"\\PipeHat.profile";
+    return g_configDir + L"\\PipeHat." + disp + L".profile";
+}
+std::vector<std::wstring> enumerateProfiles() {
+    std::vector<std::wstring> out;
+    out.push_back(kDefaultDisplay);
+    WIN32_FIND_DATAW fd;
+    std::wstring pat = g_configDir + L"\\PipeHat*.profile";
+    HANDLE h = FindFirstFileW(pat.c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            std::wstring fn = fd.cFileName;
+            if (fn.size() > 15) {   // longer than "PipeHat.profile"
+                std::wstring mid = fn.substr(7, fn.size() - 7 - 8);  // strip "PipeHat" + ".profile"
+                if (!mid.empty() && mid[0] == L'.') mid.erase(0, 1);
+                bool dup = false;
+                for (auto& x : out) if (x == mid) { dup = true; break; }
+                if (!mid.empty() && !dup) out.push_back(mid);
+            }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    return out;
+}
+void populateProfileCombo(HWND hDlg) {
+    HWND c = GetDlgItem(hDlg, IDC_PROFILE);
+    SendMessageW(c, CB_RESETCONTENT, 0, 0);
+    for (auto& p : enumerateProfiles())
+        SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)p.c_str());
+}
+// Save the rules currently shown, then load the given profile into the grid.
+void switchToProfile(HWND hDlg, const std::wstring& disp, bool saveCurrent) {
+    if (saveCurrent && !g_path.empty()) saveRules(g_path);
+    g_curDisplay = disp;
+    g_path = profilePathForDisplay(disp);
+    loadRules(g_path);
+    populateList(GetDlgItem(hDlg, IDC_RULE_LIST));
+    SetDlgItemTextW(hDlg, IDC_PROFILE, disp.c_str());
+}
+
 INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
     static HINSTANCE s_hInst = nullptr;
     switch (msg) {
@@ -345,8 +399,9 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
             s_hInst = (HINSTANCE)GetWindowLongPtrW(hDlg, GWLP_HINSTANCE);
             HWND hList = GetDlgItem(hDlg, IDC_RULE_LIST);
             initColumns(hList);
-            loadRules(g_path);
-            populateList(hList);
+            populateProfileCombo(hDlg);
+            std::wstring activeDisp = displayFromName(g_activeProfilePtr ? *g_activeProfilePtr : std::wstring());
+            switchToProfile(hDlg, activeDisp, false);
             populateMllp(hDlg);
             // "Add rule from current field": jump straight into the rule editor.
             if (!g_seedSeg.empty() && g_seedField > 0)
@@ -369,7 +424,41 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         case WM_COMMAND: {
             HWND hList = GetDlgItem(hDlg, IDC_RULE_LIST);
+            // Profile picked from the dropdown → save current, load selected.
+            if (LOWORD(wParam) == IDC_PROFILE && HIWORD(wParam) == CBN_SELCHANGE) {
+                HWND c = GetDlgItem(hDlg, IDC_PROFILE);
+                int sel = (int)SendMessageW(c, CB_GETCURSEL, 0, 0);
+                if (sel >= 0) {
+                    wchar_t b[128] = { 0 };
+                    SendMessageW(c, CB_GETLBTEXT, sel, (LPARAM)b);
+                    switchToProfile(hDlg, b, true);
+                }
+                return TRUE;
+            }
             switch (LOWORD(wParam)) {
+                case IDC_PROFILE_NEW: {
+                    // Use the (editable) combo text as the new profile name.
+                    std::wstring raw = getText(hDlg, IDC_PROFILE);
+                    std::wstring name;
+                    for (wchar_t ch : raw)
+                        if (iswalnum(ch) || ch == L'-' || ch == L'_') name += ch;
+                    if (name.empty() || name == kDefaultDisplay) {
+                        MessageBoxW(hDlg,
+                            L"Type a profile name (letters, digits, - or _) then click New.",
+                            L"PipeHat Settings", MB_OK | MB_ICONINFORMATION);
+                        return TRUE;
+                    }
+                    std::wstring path = profilePathForDisplay(name);
+                    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                        std::string bytes = wToUtf8(ConformanceProfile::defaultFileText());
+                        std::ofstream out(path.c_str(), std::ios::binary);
+                        if (out) out.write(bytes.data(), (std::streamsize)bytes.size());
+                    }
+                    switchToProfile(hDlg, name, true);   // save current, load the new one
+                    populateProfileCombo(hDlg);
+                    SetDlgItemTextW(hDlg, IDC_PROFILE, name.c_str());
+                    return TRUE;
+                }
                 case IDC_MLLP_ALLOWNONLOOP:
                     EnableWindow(GetDlgItem(hDlg, IDC_MLLP_BINDADDR),
                                  isChecked(hDlg, IDC_MLLP_ALLOWNONLOOP));
@@ -402,11 +491,12 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
                 }
                 case IDOK:
                     if (!saveRules(g_path)) {
-                        MessageBoxW(hDlg, L"Could not write PipeHat.profile.",
+                        MessageBoxW(hDlg, L"Could not write the profile file.",
                                     L"PipeHat Settings", MB_OK | MB_ICONERROR);
                         return TRUE;
                     }
                     readMllp(hDlg);
+                    if (g_activeProfilePtr) *g_activeProfilePtr = nameFromDisplay(g_curDisplay);
                     EndDialog(hDlg, IDOK);
                     return TRUE;
                 case IDCANCEL:
@@ -423,10 +513,12 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 
 namespace SettingsDialog {
 
-bool runModal(HINSTANCE hInst, HWND hParent, const std::wstring& profilePath,
-              MllpConfig& cfg, const std::wstring& seedSeg, int seedField,
-              const SegmentDB* segDb) {
-    g_path = profilePath;
+bool runModal(HINSTANCE hInst, HWND hParent, const std::wstring& configDir,
+              std::wstring& activeProfile, MllpConfig& cfg,
+              const std::wstring& seedSeg, int seedField, const SegmentDB* segDb) {
+    g_configDir = configDir;
+    g_activeProfilePtr = &activeProfile;
+    g_path.clear();                    // set by switchToProfile in WM_INITDIALOG
     g_cfg = &cfg;
     g_seedSeg = seedSeg;
     g_seedField = seedField;
@@ -441,6 +533,8 @@ bool runModal(HINSTANCE hInst, HWND hParent, const std::wstring& profilePath,
     g_cfg = nullptr;
     g_seedSeg.clear(); g_seedField = 0;
     g_segDb = nullptr;
+    g_activeProfilePtr = nullptr;
+    g_configDir.clear();
     return (r == IDOK);
 }
 

@@ -180,8 +180,11 @@ Protocol (MLLP) framing (`<VT>` 0x0B … message … `<FS>` 0x1C `<CR>` 0x0D):
   input validation, saving back to `PipeHat.profile`.
   - ✅ **"Add rule from current field"** — menu: *Add Conformance Rule from Field* seeds the rule
     editor from the field at the caret (segment + field pre-filled).
-  - ⏳ Still open: `SegmentDB`-backed segment/field dropdowns in the rule editor, and per-interface
-    profile switching (multiple named profile files).
+  - ✅ **SegmentDB-backed dropdowns** — the rule editor's segment/field inputs are dropdowns
+    populated from `SegmentDB` (picking a segment refreshes its field list); still editable for Z-segments.
+  - ✅ **Named / switchable profiles** — a profile selector + *New* in the dialog manages
+    `PipeHat[.name].profile` files; the active profile persists in `PipeHat.ini` `[Conformance]`
+    and drives `loadProfile`. Per-interface rule sets, switchable without hand-editing files.
 - **Pretty-print / reformat** — expand a packed message to one-field-per-line and back.
 - **Segment folding** — the menu command exists; set fold levels per segment so it actually collapses.
 - **Copy field path** ✅ **done** — Copy Field Path (Ctrl+Alt+K) copies the HL7 path at the caret
