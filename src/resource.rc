@@ -1,9 +1,53 @@
 #include <windows.h>
+#include <commctrl.h>
+#include "resource.h"
 
-// Minimal dialog for the tree view panel
-// DialogProc handles creating the TreeView manually
+// Dialog 1 — the dockable Message Tree panel. Its TreeView is created in code
+// (MessageTreeView::dlgProc), so the template is intentionally empty.
 1 DIALOGEX 0, 0, 300, 400
 STYLE WS_CHILD
 EXSTYLE 0
 BEGIN
+END
+
+// Dialog 2 (IDD_SETTINGS) — PipeHat settings. Today the only user-customizable
+// state is the conformance rule set (PipeHat.profile); this is its editor.
+IDD_SETTINGS DIALOGEX 0, 0, 344, 232
+STYLE DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "PipeHat Settings \x2014 Conformance Rules"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT           "Rules that Check Conformance applies to the active message. One row per segment-field; edit for the interface you are validating.",
+                    -1, 7, 6, 330, 18
+    CONTROL         "", IDC_RULE_LIST, "SysListView32",
+                    LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP,
+                    7, 28, 330, 158
+    PUSHBUTTON      "&Add\x2026", IDC_RULE_ADD, 7, 192, 52, 14
+    PUSHBUTTON      "&Edit\x2026", IDC_RULE_EDIT, 63, 192, 52, 14
+    PUSHBUTTON      "&Remove", IDC_RULE_REMOVE, 119, 192, 52, 14
+    DEFPUSHBUTTON   "&Save", IDOK, 229, 192, 52, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 285, 192, 52, 14
+    LTEXT           "Saved to PipeHat.profile in the Notepad++ plugin config folder.",
+                    -1, 7, 214, 330, 10
+END
+
+// Dialog 3 (IDD_RULE) — add or edit a single conformance rule.
+IDD_RULE DIALOGEX 0, 0, 224, 156
+STYLE DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Conformance Rule"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT           "Segment:", -1, 7, 10, 44, 10
+    EDITTEXT        IDC_RULE_SEG, 66, 8, 52, 12, ES_UPPERCASE | ES_AUTOHSCROLL
+    LTEXT           "Field #:", -1, 7, 27, 44, 10
+    EDITTEXT        IDC_RULE_FIELD, 66, 25, 44, 12, ES_NUMBER | ES_AUTOHSCROLL
+    AUTOCHECKBOX    "Max length", IDC_RULE_MAXCHK, 7, 45, 55, 10
+    EDITTEXT        IDC_RULE_MAX, 66, 43, 44, 12, ES_NUMBER | ES_AUTOHSCROLL
+    AUTOCHECKBOX    "Allowed values (comma-separated)", IDC_RULE_VALCHK, 7, 62, 160, 10
+    EDITTEXT        IDC_RULE_VALUES, 7, 74, 210, 12, ES_AUTOHSCROLL
+    AUTOCHECKBOX    "Required (field must be present)", IDC_RULE_REQ, 7, 92, 160, 10
+    LTEXT           "For MSH, use HL7 field numbers (MSH-9, MSH-12\x2026).",
+                    -1, 7, 110, 210, 10
+    DEFPUSHBUTTON   "OK", IDOK, 111, 132, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 167, 132, 50, 14
 END

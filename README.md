@@ -48,7 +48,7 @@ The plugin activates automatically on HL7 **content** (first non-blank segment i
 | `Ctrl+Alt+H` | Scrub PHI | `Ctrl+Alt+D` | Compare with clipboard |
 | `Ctrl+Alt+C` | Check conformance | `Ctrl+Alt+R` | Pretty-print / reformat |
 | `Ctrl+Alt+F` | Toggle folding | `Ctrl+Alt+E` | Enable HL7 highlighting |
-| `Ctrl+Alt+←` / `→` | Previous / next field | | |
+| `Ctrl+Alt+←` / `→` | Previous / next field | `Ctrl+Alt+S` | Settings (conformance rules) |
 
 Any conflicts can be remapped in *Settings → Shortcut Mapper → Plugin commands*.
 
@@ -133,6 +133,11 @@ MSH-9.required=true        # field must be present
 
 Violating fields are squiggle-underlined in the editor and listed in a summary dialog.
 
+You don't have to hand-edit the file: **Settings** (`Ctrl+Alt+S`) opens a rule editor —
+a `segment / field / max / allowed values / required` grid with Add / Edit / Remove — that
+reads and writes `PipeHat.profile` and reloads it immediately so the next Check Conformance
+uses your changes. The file format is unchanged, so hand-editing and the GUI interoperate.
+
 ---
 
 ## Documentation
@@ -153,11 +158,12 @@ Violating fields are squiggle-underlined in the editor and listed in a summary d
 
 ## Status
 
-**v1.2.0.** Crash-class defects and the fail-open PHI leak from the initial review are fixed
+**v1.3.0.** Crash-class defects and the fail-open PHI leak from the initial review are fixed
 and build-verified. v1.1 added trigger-event decoding, HIPAA Safe Harbor scrubber coverage,
 conformance checking, hotkeys, and smarter panel behavior; v1.2 adds structural validation,
 message compare/diff, escape + HL7-version decoding, pretty-print, folding, and broader
-activation. Each feature is verified by a standalone test. See the roadmap for what's next.
+activation; v1.3 adds the **Settings GUI** for editing conformance rules without hand-editing
+the profile file. Each feature is verified by a standalone test. See the roadmap for what's next.
 
 ---
 

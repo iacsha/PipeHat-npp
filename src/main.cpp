@@ -18,6 +18,7 @@
 #include "ConformanceProfile.h"
 #include "Validator.h"
 #include "MessageDiff.h"
+#include "SettingsDialog.h"
 
 // Scintilla indicator slots for squiggles (0-7 are reserved for lexers).
 #define PIPEHAT_INDIC_CONFORMANCE 18
@@ -50,7 +51,7 @@ static bool g_treeIntent = false;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[11];
+static FuncItem g_funcItems[12];
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -62,6 +63,7 @@ static ShortcutKey g_skPretty;
 static ShortcutKey g_skEnable;
 static ShortcutKey g_skValidate;
 static ShortcutKey g_skCompare;
+static ShortcutKey g_skSettings;
 
 // ── Helpers ──
 static HWND getCurrentScintilla() {
@@ -433,6 +435,32 @@ static void loadProfile() {
     if (!in) return;
     std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     g_profile.parse(utf8ToW(bytes));
+}
+
+// Open the settings GUI (conformance-rule editor). It reads and writes the same
+// PipeHat.profile that loadProfile() consumes; on save we reload so Check
+// Conformance immediately reflects the edits without a restart.
+static void cmdSettings() {
+    wchar_t cfgDir[MAX_PATH]; cfgDir[0] = 0;
+    SendMessage(g_nppData._nppHandle, NPPM_GETPLUGINSCONFIGDIR, MAX_PATH, (LPARAM)cfgDir);
+    if (cfgDir[0] == 0) {
+        MessageBoxW(g_nppData._nppHandle,
+            L"Could not locate the Notepad++ plugin config folder.",
+            L"PipeHat Settings", MB_OK | MB_ICONERROR);
+        return;
+    }
+    std::wstring path = std::wstring(cfgDir) + L"\\PipeHat.profile";
+
+    // Seed the documented default so the editor opens against a real file.
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        std::string bytes = wToUtf8(ConformanceProfile::defaultFileText());
+        std::ofstream out(path.c_str(), std::ios::binary);
+        if (out) out.write(bytes.data(), (std::streamsize)bytes.size());
+    }
+
+    if (SettingsDialog::runModal((HINSTANCE)g_hModule, g_nppData._nppHandle, path)) {
+        loadProfile();
+    }
 }
 
 // Check every field in the active message against the conformance profile,
@@ -830,6 +858,7 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skEnable     = { true, true, false, 'E' };            // Ctrl+Alt+E  — force-enable HL7 mode
     g_skValidate   = { true, true, false, 'V' };            // Ctrl+Alt+V  — validate / malform check
     g_skCompare    = { true, true, false, 'D' };            // Ctrl+Alt+D  — diff vs clipboard
+    g_skSettings   = { true, true, false, 'S' };            // Ctrl+Alt+S  — settings (conformance rules)
 
     g_nbFuncItems = 0;
 
@@ -901,6 +930,13 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_funcItems[g_nbFuncItems]._pShKey = &g_skFold;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Settings\x2026");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdSettings;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skSettings;
     g_nbFuncItems++;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"About PipeHat");

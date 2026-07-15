@@ -63,6 +63,16 @@ malform checks), and **`MessageDiff.h`** (segment/field-aware clipboard diff). T
 field navigation, folding) live in `main.cpp` and are exposed via `getFuncsArray` with
 `Ctrl+Alt+` hotkeys. Conformance squiggles use Scintilla indicator 18, validation 19.
 
+The v1.3 **settings GUI** (`SettingsDialog.{h,cpp}`, `cmdSettings`, Ctrl+Alt+S) is the one
+recent feature that is **not** header-only — it needs `.rc` dialog templates, so it is listed
+in `CMakeLists.txt`. Dialog resource IDs live in `src/resource.h` (shared by `resource.rc` and
+the dialog code): the dockable tree panel keeps dialog ID **1** (empty template, controls built
+in code); `IDD_SETTINGS = 2` and `IDD_RULE = 3` are the modal conformance-rule editor and its
+single-rule sub-dialog. The editor reads/writes the same `PipeHat.profile` `loadProfile()`
+parses — on save it regenerates the rule lines from the grid (preserving the documented header)
+and `cmdSettings` reloads the profile so Check Conformance updates without a restart. There are
+12 menu items as of v1.3.0.
+
 Data flow: `beNotified` (buffer activated / modified / dwell) → `HL7Lexer.tokenize` →
 either `ScintillaStyler` (colors + tooltips) or `MessageTreeView.refresh` (tree). The
 scrub command runs its own three-pass lexer sweep over the whole document.

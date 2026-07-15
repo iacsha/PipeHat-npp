@@ -61,4 +61,20 @@ diff). Prefer this pattern for the next feature.
 - Scintilla indicator slots: **18** = conformance squiggles, **19** = validation squiggles
   (0–7 are reserved for lexers). Pick 20+ for new indicators.
 - Menu commands live in `getFuncsArray` with static `ShortcutKey` objects (Ctrl+Alt+ combos);
-  bump `g_funcItems[N]` when adding one.
+  bump `g_funcItems[N]` when adding one. There are **12** items as of v1.3.0.
+
+## Dialogs / settings GUI (v1.3, NOT header-only)
+
+`SettingsDialog.{h,cpp}` is a modal conformance-rule editor (`Settings`, Ctrl+Alt+S). Unlike the
+feature modules it is **not** header-only — it needs `.rc` dialog templates, so it is listed in
+`CMakeLists.txt` and `resource.rc`.
+
+- Dialog resource IDs live in `src/resource.h` (shared by `resource.rc` and `SettingsDialog.cpp`):
+  `IDD_SETTINGS = 2`, `IDD_RULE = 3`. The dockable tree panel keeps dialog ID **1** (empty
+  template, controls built in code). New dialogs take 4+.
+- The editor reads/writes the same `PipeHat.profile` that `loadProfile()` parses. On save it is
+  the source of truth: rule lines are regenerated from the grid and the documented header comment
+  (`ConformanceProfile::defaultFileText()`) is preserved. `cmdSettings` reloads the profile after
+  save so Check Conformance reflects edits without a restart.
+- ListView needs `InitCommonControlsEx(ICC_LISTVIEW_CLASSES)` (done in `runModal`) and `comctl32`
+  (already linked).
