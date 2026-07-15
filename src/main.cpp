@@ -7,6 +7,7 @@
 #include <regex>
 #include <fstream>
 #include <iterator>
+#include <unordered_map>
 #include "npp/PluginInterface.h"
 #include "PluginDefs.h"
 #include "HL7Lexer.h"
@@ -27,6 +28,7 @@
 // Scintilla indicator slots for squiggles (0-7 are reserved for lexers).
 #define PIPEHAT_INDIC_CONFORMANCE 18
 #define PIPEHAT_INDIC_VALIDATION  19
+#define PIPEHAT_INDIC_DIFF        20  // Compare Views field-difference highlight
 
 // Custom messages posted from MLLP worker/listener threads to the hidden
 // UI-thread window (buffer creation and dialogs must run on the UI thread).
@@ -931,68 +933,165 @@ static void cmdValidate() {
     }
 }
 
-// Compare the current message against the clipboard, segment- and field-aligned,
-// and open the diff in a new tab. The classic interface-troubleshooting workflow:
-// copy a working message, open the broken one, and see exactly what differs.
-static void cmdCompareClipboard() {
-    ScintillaView& view = getCurrentView();
-    if (!view.isHL7 || !view.fnDirect) {
-        MessageBoxW(g_nppData._nppHandle, L"No HL7 document is currently active.",
-                    L"Compare with Clipboard", MB_OK | MB_ICONINFORMATION);
-        return;
-    }
-    SciFnDirect fn = view.fnDirect;
-    sptr_t ptr = view.ptrDirect;
+// ── Compare two open messages side by side ──
+// The interface-troubleshooting workflow: put a known-good message in one
+// Notepad++ view and the problem message in the other (View > Move/Clone to
+// Other View), then highlight every differing field in BOTH panes in place.
 
-    // Current message text.
-    int len = (int)fn(ptr, SCI_GETLENGTH, 0, 0);
-    std::string bytes(static_cast<size_t>(len) + 1, '\0');
-    fn(ptr, SCI_GETTEXT, len + 1, (sptr_t)&bytes[0]);
-    bytes.resize(len);
-    std::wstring msgA = utf8ToW(bytes);
+// One segment occurrence in a document: its field values and each field's byte
+// range, so differences can be highlighted where they sit.
+struct SegOcc {
+    std::wstring key;                          // "SEG#occurrence"
+    int line = 0;
+    int lineStartByte = 0;
+    bool isMSH = false;
+    std::vector<std::wstring> fields;          // [0]=segid; [k]=field (MSH: [k]=MSH-(k+1))
+    std::vector<std::pair<int, int>> ranges;   // per-field (startByte, endByte) in the doc
+};
 
-    // Clipboard text.
-    std::wstring clip;
-    if (OpenClipboard(g_nppData._nppHandle)) {
-        HANDLE h = GetClipboardData(CF_UNICODETEXT);
-        if (h) {
-            wchar_t* p = (wchar_t*)GlobalLock(h);
-            if (p) { clip = p; GlobalUnlock(h); }
-        }
-        CloseClipboard();
-    }
-    if (clip.empty()) {
-        MessageBoxW(g_nppData._nppHandle,
-            L"The clipboard has no text.\r\n\r\nCopy the message you want to compare "
-            L"against (e.g. a known-good message), then run Compare with Clipboard.",
-            L"Compare with Clipboard", MB_OK | MB_ICONINFORMATION);
-        return;
-    }
+// Walk a view's document into per-segment-occurrence field values + byte ranges.
+static std::vector<SegOcc> indexDocForDiff(SciFnDirect fn, sptr_t ptr) {
+    std::vector<SegOcc> out;
+    if (!fn) return out;
 
-    // Delimiters from the current message.
     HL7Lexer lexer;
-    {
-        std::vector<std::wstring> segs = hl7diff::splitSegments(msgA);
-        for (const auto& s : segs)
-            if (lexer.extractSegmentID(s.c_str(), (int)s.size()) == L"MSH") {
-                lexer.parseMSH(s.c_str(), (int)s.size());
-                break;
-            }
+    int lineCount = (int)fn(ptr, SCI_GETLINECOUNT, 0, 0);
+    for (int li = 0; li < lineCount; li++) {
+        std::wstring wl = getLineW(fn, ptr, li);
+        if (lexer.extractSegmentID(wl.c_str(), (int)wl.size()) == L"MSH") {
+            lexer.parseMSH(wl.c_str(), (int)wl.size());
+            break;
+        }
+    }
+    wchar_t fieldSep = lexer.delimiters().fieldSep;
+
+    std::unordered_map<std::wstring, int> occ;
+    for (int li = 0; li < lineCount; li++) {
+        std::wstring wl = getLineW(fn, ptr, li);
+        if (wl.size() < 3) continue;
+        std::wstring seg = lexer.extractSegmentID(wl.c_str(), (int)wl.size());
+        if (seg.empty()) continue;
+
+        SegOcc so;
+        so.key = seg + L"#" + std::to_wstring(++occ[seg]);
+        so.line = li;
+        so.lineStartByte = (int)fn(ptr, SCI_POSITIONFROMLINE, li, 0);
+        so.isMSH = (seg == L"MSH");
+
+        const wchar_t* w = wl.c_str();
+        size_t pos = 0;
+        while (pos <= wl.size()) {
+            size_t sep = wl.find(fieldSep, pos);
+            size_t end = (sep == std::wstring::npos) ? wl.size() : sep;
+            int prefixBytes = WideCharToMultiByte(CP_UTF8, 0, w, (int)pos, nullptr, 0, nullptr, nullptr);
+            int tokBytes = WideCharToMultiByte(CP_UTF8, 0, w + pos, (int)(end - pos), nullptr, 0, nullptr, nullptr);
+            if (prefixBytes < 0) prefixBytes = 0;
+            if (tokBytes < 0) tokBytes = 0;
+            so.fields.push_back(wl.substr(pos, end - pos));
+            so.ranges.push_back({ so.lineStartByte + prefixBytes,
+                                  so.lineStartByte + prefixBytes + tokBytes });
+            if (sep == std::wstring::npos) break;
+            pos = sep + 1;
+        }
+        out.push_back(std::move(so));
+    }
+    return out;
+}
+
+static void setupDiffIndicator(SciFnDirect fn, sptr_t ptr) {
+    fn(ptr, SCI_SETINDICATORCURRENT, PIPEHAT_INDIC_DIFF, 0);
+    fn(ptr, SCI_INDICSETSTYLE, PIPEHAT_INDIC_DIFF, INDIC_STRAIGHTBOX);
+    fn(ptr, SCI_INDICSETFORE, PIPEHAT_INDIC_DIFF, 0x0080FF);   // orange (BGR)
+    fn(ptr, SCI_INDICSETALPHA, PIPEHAT_INDIC_DIFF, 70);
+    fn(ptr, SCI_INDICSETOUTLINEALPHA, PIPEHAT_INDIC_DIFF, 160);
+    int dl = (int)fn(ptr, SCI_GETLENGTH, 0, 0);
+    fn(ptr, SCI_INDICATORCLEARRANGE, 0, dl);
+}
+
+static void fillDiff(SciFnDirect fn, sptr_t ptr, int a, int b) {
+    if (b > a) {
+        fn(ptr, SCI_SETINDICATORCURRENT, PIPEHAT_INDIC_DIFF, 0);
+        fn(ptr, SCI_INDICATORFILLRANGE, a, b - a);
+    }
+}
+
+static void cmdCompareViews() {
+    HWND hMain = g_nppData._scintillaMainHandle;
+    HWND hSub  = g_nppData._scintillaSecondHandle;
+    SciFnDirect fnA = (SciFnDirect)SendMessage(hMain, SCI_GETDIRECTFUNCTION, 0, 0);
+    sptr_t ptrA = (sptr_t)SendMessage(hMain, SCI_GETDIRECTPOINTER, 0, 0);
+    SciFnDirect fnB = (SciFnDirect)SendMessage(hSub, SCI_GETDIRECTFUNCTION, 0, 0);
+    sptr_t ptrB = (sptr_t)SendMessage(hSub, SCI_GETDIRECTPOINTER, 0, 0);
+
+    int lenA = fnA ? (int)fnA(ptrA, SCI_GETLENGTH, 0, 0) : 0;
+    int lenB = fnB ? (int)fnB(ptrB, SCI_GETLENGTH, 0, 0) : 0;
+    if (!fnA || !fnB || lenA == 0 || lenB == 0) {
+        MessageBoxW(g_nppData._nppHandle,
+            L"Compare Views needs a message open in EACH of the two views.\r\n\r\n"
+            L"Open the first message, then move or clone the second into the other "
+            L"view (View > Move/Clone Current Document > Move to Other View, or drag "
+            L"its tab to the side), and run Compare Views again.",
+            L"Compare Views", MB_OK | MB_ICONINFORMATION);
+        return;
     }
 
-    std::wstring report = hl7diff::diff(msgA, clip,
-                                        lexer.delimiters().fieldSep, lexer.delimiters().compSep);
+    std::vector<SegOcc> A = indexDocForDiff(fnA, ptrA);
+    std::vector<SegOcc> B = indexDocForDiff(fnB, ptrB);
+    setupDiffIndicator(fnA, ptrA);
+    setupDiffIndicator(fnB, ptrB);
 
-    // Open the diff in a new document.
-    SendMessage(g_nppData._nppHandle, NPPM_MENUCOMMAND, 0, IDM_FILE_NEW);
-    HWND hNew = getCurrentScintilla();
-    if (hNew) {
-        SciFnDirect nfn = (SciFnDirect)SendMessage(hNew, SCI_GETDIRECTFUNCTION, 0, 0);
-        sptr_t nptr = (sptr_t)SendMessage(hNew, SCI_GETDIRECTPOINTER, 0, 0);
-        if (nfn) {
-            std::string outU8 = wToUtf8(report);
-            nfn(nptr, SCI_SETTEXT, 0, (sptr_t)outU8.c_str());
+    std::unordered_map<std::wstring, int> bIndex;
+    for (int i = 0; i < (int)B.size(); i++) bIndex[B[i].key] = i;
+    std::unordered_map<std::wstring, bool> aSeen;
+
+    int diffs = 0;
+    std::wstring report;
+    auto note = [&](const std::wstring& s) { if (diffs <= 40) report += s + L"\r\n"; };
+
+    for (auto& sa : A) {
+        aSeen[sa.key] = true;
+        auto it = bIndex.find(sa.key);
+        if (it == bIndex.end()) {
+            int end = (int)fnA(ptrA, SCI_GETLINEENDPOSITION, sa.line, 0);
+            fillDiff(fnA, ptrA, sa.lineStartByte, end);
+            diffs++; note(L"- " + sa.key + L"  (only in left view)");
+            continue;
         }
+        SegOcc& sb = B[it->second];
+        int maxF = (int)(sa.fields.size() > sb.fields.size() ? sa.fields.size() : sb.fields.size());
+        for (int k = 1; k < maxF; k++) {
+            if (sa.isMSH) { int mshNo = k + 1; if (mshNo == 7 || mshNo == 10) continue; } // volatile
+            std::wstring va = k < (int)sa.fields.size() ? sa.fields[k] : std::wstring();
+            std::wstring vb = k < (int)sb.fields.size() ? sb.fields[k] : std::wstring();
+            if (va != vb) {
+                diffs++;
+                if (k < (int)sa.ranges.size()) fillDiff(fnA, ptrA, sa.ranges[k].first, sa.ranges[k].second);
+                if (k < (int)sb.ranges.size()) fillDiff(fnB, ptrB, sb.ranges[k].first, sb.ranges[k].second);
+                int fieldNo = sa.isMSH ? (k + 1) : k;
+                std::wstring segId = sa.key.substr(0, sa.key.find(L'#'));
+                note(L"~ " + segId + L"-" + std::to_wstring(fieldNo) +
+                     L":  '" + va + L"'  vs  '" + vb + L"'");
+            }
+        }
+    }
+    for (auto& sb : B) {
+        if (!aSeen.count(sb.key)) {
+            int end = (int)fnB(ptrB, SCI_GETLINEENDPOSITION, sb.line, 0);
+            fillDiff(fnB, ptrB, sb.lineStartByte, end);
+            diffs++; note(L"+ " + sb.key + L"  (only in right view)");
+        }
+    }
+
+    if (diffs == 0) {
+        MessageBoxW(g_nppData._nppHandle,
+            L"The two messages match (ignoring MSH-7 datetime and MSH-10 control id).",
+            L"Compare Views", MB_OK | MB_ICONINFORMATION);
+    } else {
+        std::wstring out = L"Found " + std::to_wstring(diffs) +
+            L" difference(s). Differing fields are highlighted in both panes.\r\n\r\n" + report;
+        if (diffs > 40) out += L"\r\n(showing first 40)";
+        MessageBoxW(g_nppData._nppHandle, out.c_str(),
+            L"Compare Views \x2014 Differences", MB_OK | MB_ICONWARNING);
     }
 }
 
@@ -1004,7 +1103,7 @@ static void cmdAbout() {
         L"message tree, PHI scrubbing, conformance + structural validation,\r\n"
         L"compare/diff, pretty-print, folding, and MLLP send/receive.\r\n\r\n"
         L"Hotkeys (Ctrl+Alt+ ...): T tree, H scrub, C check, V validate,\r\n"
-        L"D diff, R reformat, E enable, G fold, P settings, M send, L listen,\r\n"
+        L"D compare views, R reformat, E enable, G fold, P settings, M send, L listen,\r\n"
         L"Left/Right field nav. Activates on MSH/FHS/BHS content or a .hl7 file.\r\n\r\n"
         L"MLLP networking is OFF by default \x2014 enable it in Settings.",
         L"About PipeHat", MB_OK | MB_ICONINFORMATION);
@@ -1109,7 +1208,7 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skPretty     = { true, true, false, 'R' };            // Ctrl+Alt+R  — reformat / pretty-print
     g_skEnable     = { true, true, false, 'E' };            // Ctrl+Alt+E  — force-enable HL7 mode
     g_skValidate   = { true, true, false, 'V' };            // Ctrl+Alt+V  — validate / malform check
-    g_skCompare    = { true, true, false, 'D' };            // Ctrl+Alt+D  — diff vs clipboard
+    g_skCompare    = { true, true, false, 'D' };            // Ctrl+Alt+D  — compare the two views
     g_skSettings   = { true, true, false, 'P' };            // Ctrl+Alt+P  — settings (S is NPP "Save As")
     g_skMllpSend   = { true, true, false, 'M' };            // Ctrl+Alt+M  — MLLP send message
     g_skMllpListen = { true, true, false, 'L' };            // Ctrl+Alt+L  — MLLP listener toggle
@@ -1165,8 +1264,8 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._pShKey = &g_skValidate;
     g_nbFuncItems++;
 
-    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Compare with Clipboard");
-    g_funcItems[g_nbFuncItems]._pFunc = cmdCompareClipboard;
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Compare Views (side by side)");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdCompareViews;
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_funcItems[g_nbFuncItems]._pShKey = &g_skCompare;

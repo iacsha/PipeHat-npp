@@ -183,6 +183,10 @@ Protocol (MLLP) framing (`<VT>` 0x0B … message … `<FS>` 0x1C `<CR>` 0x0D):
 - **Pretty-print / reformat** — expand a packed message to one-field-per-line and back.
 - **Segment folding** — the menu command exists; set fold levels per segment so it actually collapses.
 - **Copy field path** — right-click a value → copy `PID-5.1` (matches Mirth/BridgeLink channel references).
+- **Copy as rich text (RTF/HTML)** 💡 — copy the message *with its syntax colors* so it pastes into
+  Word/Outlook formatted. Scintilla's `Ctrl+C` is plain-text only (colors are a render layer), and
+  the NppExport plugin is the current workaround; a native HL7-aware "Copy as rich text" would remove
+  that dependency (serialize the style bytes + palette to RTF and put `CF_RTF` / `CF_HTML` on the clipboard).
 - **Data-driven segment/PHI tables** — generate from HAPI/nHapi metadata instead of the hand-curated maps (closes M8 by construction).
 - **Component/subcomponent tree depth** — expand fields into components in the tree (currently field-level only).
 - **HL7Soup-style color coding** 💡 — richer syntax palette with **alternating field-value colors**

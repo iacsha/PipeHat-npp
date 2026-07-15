@@ -80,6 +80,10 @@ typedef sptr_t (*SciFnDirect)(sptr_t ptr, unsigned int iMessage, uptr_t wParam, 
 #define SCI_INDICATORCLEARRANGE 2505
 #define INDIC_PLAIN 0
 #define INDIC_SQUIGGLE 1
+#define INDIC_ROUNDBOX 7
+#define INDIC_STRAIGHTBOX 8
+#define SCI_INDICSETALPHA 2523
+#define SCI_INDICSETOUTLINEALPHA 2558
 
 // Mouse / dwell
 #define SCI_SETMOUSEDWELLTIME 2264

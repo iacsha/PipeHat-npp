@@ -29,8 +29,9 @@ knows by heart.
   are squiggle-underlined and listed — a pre-flight *"will the receiver accept this?"* check.
 - **Structural validation** — advisory malform detection: missing MSH, invalid segment IDs,
   empty required MSH fields, unterminated escape sequences. Never blocking.
-- **Compare / diff** — segment- and field-aware diff of the current message against the
-  clipboard, opened in a new tab (ignores volatile MSH-7 datetime / MSH-10 control ID).
+- **Compare views** — put one message in each of Notepad++'s two split views and run
+  Compare Views (`Ctrl+Alt+D`); every differing field is highlighted **in place in both panes**,
+  segment- and field-aware (ignores volatile MSH-7 datetime / MSH-10 control ID).
 - **Pretty-print** — put every segment on its own line (fixes single-line CR-delimited
   messages), and **folding** to collapse detail-segment groups (OBX/NTE under their parent).
 - **Version & escape decoding** — MSH-12 shows the HL7 version + era; escape sequences
@@ -45,7 +46,7 @@ The plugin activates automatically on HL7 **content** (first non-blank segment i
 | Shortcut | Action | Shortcut | Action |
 |----------|--------|----------|--------|
 | `Ctrl+Alt+T` | Toggle message tree | `Ctrl+Alt+V` | Validate message |
-| `Ctrl+Alt+H` | Scrub PHI | `Ctrl+Alt+D` | Compare with clipboard |
+| `Ctrl+Alt+H` | Scrub PHI | `Ctrl+Alt+D` | Compare the two views |
 | `Ctrl+Alt+C` | Check conformance | `Ctrl+Alt+R` | Pretty-print / reformat |
 | `Ctrl+Alt+G` | Toggle folding | `Ctrl+Alt+E` | Enable HL7 highlighting |
 | `Ctrl+Alt+←` / `→` | Previous / next field | `Ctrl+Alt+P` | Settings |
