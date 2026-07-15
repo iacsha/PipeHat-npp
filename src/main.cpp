@@ -220,6 +220,22 @@ static void setFoldLevels(ScintillaView& view) {
     }
 }
 
+// Turn on HL7 mode for a view and paint it — the "pretty text" + tree. Used both
+// by auto-detection and by forced activation (e.g. an MLLP-received buffer, which
+// we know is HL7 regardless of what detection makes of its lone-CR line endings).
+static void applyHL7Styling(ScintillaView& view) {
+    if (!view.hWnd || !view.fnDirect) return;
+    view.isHL7 = true;
+    view.lexer.reset();
+    view.styler.defineStyles();
+    view.styler.styleAll();
+    view.fnDirect(view.ptrDirect, SCI_SETLEXER, SCLEX_CONTAINER, 0);
+    int length = (int)view.fnDirect(view.ptrDirect, SCI_GETLENGTH, 0, 0);
+    view.fnDirect(view.ptrDirect, SCI_COLOURISE, 0, length - 1);
+    setFoldLevels(view);
+    g_treeView.refresh(view.hWnd, view.fnDirect, view.ptrDirect, view.lexer, g_segmentDB);
+}
+
 static void checkAndEnableHL7(ScintillaView& view) {
     if (!view.hWnd || !view.fnDirect) return;
 
@@ -227,19 +243,7 @@ static void checkAndEnableHL7(ScintillaView& view) {
                  || currentPathHasHl7Ext();
 
     if (isHL7 && !view.isHL7) {
-        view.isHL7 = true;
-        view.lexer.reset();
-        view.styler.defineStyles();
-        view.styler.styleAll();
-
-        view.fnDirect(view.ptrDirect, SCI_SETLEXER, SCLEX_CONTAINER, 0);
-
-        int length = (int)view.fnDirect(view.ptrDirect, SCI_GETLENGTH, 0, 0);
-        view.fnDirect(view.ptrDirect, SCI_COLOURISE, 0, length - 1);
-
-        setFoldLevels(view);
-        g_treeView.refresh(view.hWnd, view.fnDirect, view.ptrDirect, view.lexer, g_segmentDB);
-
+        applyHL7Styling(view);
     } else if (!isHL7 && view.isHL7) {
         view.isHL7 = false;
     }
@@ -687,17 +691,28 @@ static LRESULT CALLBACK mllpWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_MLLP_RECEIVED: {
             std::string* payload = (std::string*)l;
             if (payload) {
+                // HL7 segments arrive terminated by lone CR; normalize to CRLF so the
+                // new buffer displays as normal lines (and doesn't depend on lone-CR
+                // handling for detection).
+                std::string disp; disp.reserve(payload->size());
+                for (size_t i = 0; i < payload->size(); ++i) {
+                    char c = (*payload)[i];
+                    if (c == '\r') { disp += "\r\n"; if (i + 1 < payload->size() && (*payload)[i + 1] == '\n') ++i; }
+                    else if (c == '\n') { disp += "\r\n"; }
+                    else disp.push_back(c);
+                }
+
                 SendMessage(g_nppData._nppHandle, NPPM_MENUCOMMAND, 0, IDM_FILE_NEW);
                 HWND hNew = getCurrentScintilla();
                 if (hNew) {
                     SciFnDirect nfn = (SciFnDirect)SendMessage(hNew, SCI_GETDIRECTFUNCTION, 0, 0);
                     sptr_t nptr = (sptr_t)SendMessage(hNew, SCI_GETDIRECTPOINTER, 0, 0);
-                    if (nfn) nfn(nptr, SCI_SETTEXT, 0, (sptr_t)payload->c_str());
+                    if (nfn) nfn(nptr, SCI_SETTEXT, 0, (sptr_t)disp.c_str());
                 }
-                // Force HL7 detection/styling on the freshly-populated buffer.
+                // The message came in over MLLP (it has an MSH — we ACKed it), so
+                // force the HL7 "pretty text" + tree rather than relying on detection.
                 ScintillaView& view = getCurrentView();
-                view.isHL7 = false;
-                checkAndEnableHL7(view);
+                applyHL7Styling(view);
                 updateTreeVisibility(view);
 
                 // Log metadata only (type, control id, segment count) — no body.
@@ -1596,14 +1611,23 @@ static void highlightCurrentField(ScintillaView& view) {
 // ── Menu commands ──
 static void cmdAbout() {
     MessageBoxW(g_nppData._nppHandle,
-        L"PipeHat " HL7_PLUGIN_VERSION L" \x2014 HL7 v2.x for Notepad++\r\n\r\n"
-        L"Highlighting, tooltips (trigger-event + version + escape decode),\r\n"
-        L"message tree, PHI scrubbing, conformance + structural validation,\r\n"
-        L"compare/diff, pretty-print, folding, and MLLP send/receive.\r\n\r\n"
-        L"Hotkeys (Ctrl+Alt+ ...): T tree, H scrub, C check, V validate,\r\n"
-        L"D compare views, R reformat, E enable, G fold, P settings, M send, L listen,\r\n"
-        L"Left/Right field nav. Activates on MSH/FHS/BHS content or a .hl7 file.\r\n\r\n"
-        L"MLLP networking is OFF by default \x2014 enable it in Settings.",
+        L"PipeHat " HL7_PLUGIN_VERSION L"\r\n"
+        L"HL7 v2.x for Notepad++\r\n"
+        L"\r\n"
+        L"A viewer and toolkit for HL7 messages: syntax highlighting, field\r\n"
+        L"tooltips, message tree, PHI scrubbing, conformance and structural\r\n"
+        L"validation, side-by-side compare, and MLLP send/receive.\r\n"
+        L"\r\n"
+        L"Hotkeys  (Ctrl+Alt+ ...)\r\n"
+        L"    View       T tree    G fold    R reformat    E enable\r\n"
+        L"    Navigate   \x2190 / \x2192 field    K copy path\r\n"
+        L"    Check      C conformance    V validate    D compare views\r\n"
+        L"    Privacy    H scrub PHI\r\n"
+        L"    Network    M send    L listen     (off by default)\r\n"
+        L"    Other      P settings    W copy as rich text\r\n"
+        L"\r\n"
+        L"Activates on MSH / FHS / BHS content or a .hl7 file.\r\n"
+        L"github.com/iacsha/PipeHat-npp",
         L"About PipeHat", MB_OK | MB_ICONINFORMATION);
 }
 
