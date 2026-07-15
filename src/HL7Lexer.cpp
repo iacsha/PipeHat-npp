@@ -45,7 +45,7 @@ std::wstring HL7Lexer::extractSegmentID(const wchar_t* line, int lineLen) const 
     wchar_t b = line[start + 1];
     wchar_t c = line[start + 2];
 
-    if (std::iswalpha(a) && std::iswalpha(b) && std::iswalpha(c)) {
+    if (std::iswalpha(a) && std::iswalnum(b) && std::iswalnum(c)) {
         return std::wstring{ a, b, c };
     }
 
@@ -57,7 +57,7 @@ bool HL7Lexer::isSegmentStart(const wchar_t* line, int lineLen) const {
     int i = 0;
     while (i < lineLen && std::iswspace(line[i])) i++;
     if (i + 3 > lineLen) return false;
-    return std::iswalpha(line[i]) && std::iswalpha(line[i + 1]) && std::iswalpha(line[i + 2]);
+    return std::iswalpha(line[i]) && std::iswalnum(line[i + 1]) && std::iswalnum(line[i + 2]);
 }
 
 int HL7Lexer::getFieldIndexAtPosition(const wchar_t* line, int lineLen, int charPos) const {
