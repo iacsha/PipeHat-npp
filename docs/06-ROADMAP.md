@@ -189,6 +189,12 @@ Protocol (MLLP) framing (`<VT>` 0x0B … message … `<FS>` 0x1C `<CR>` 0x0D):
   so field boundaries pop, plus an optional current-field highlight on the caret. The styling
   layer (`ScintillaStyler` + `SCE_HL7_*` slots) already exists; this is a palette + per-field-index
   parity change, no new architecture.
+- **MLLP / event log** 💡 — a log of MLLP activity (listener started/stopped, inbound message
+  received + its control id and ACK code, outbound send + ACK/NAK result, connection errors) and
+  other applicable events (scrub run + residual-scan result, conformance/validation run counts).
+  Surface as a dockable log panel and/or an appendable `PipeHat.log` in the config folder, with a
+  timestamp per entry. Must be **PHI-aware** — log metadata (control ids, segment counts, host:port,
+  result codes), never full message bodies, so the log itself doesn't become a PHI store.
 - **Auto-update / update prompt** 💡 — check GitHub Releases for a newer PipeHat and prompt the
   user (or auto-download the DLL). Options: a lightweight "check on startup / menu: Check for
   Updates" that hits the GitHub Releases API, compares against `HL7_PLUGIN_VERSION`, and links to

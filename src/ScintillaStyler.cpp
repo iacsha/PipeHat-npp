@@ -39,19 +39,26 @@ void ScintillaStyler::defineStyles() {
     sciV(SCI_STYLESETSIZE, STYLE_DEFAULT, 10);
     sciV(SCI_STYLESETFONT, STYLE_DEFAULT, (sptr_t)"Consolas");
 
-    sciV(SCI_STYLESETFORE, SCE_HL7_SEGMENT_ID, 0x0000CC);
+    // Colors are Scintilla COLORREF (0x00BBGGRR). Scheme mirrors HL7Soup's
+    // structured look: bold blue segment ids, visible-but-soft delimiters, and
+    // alternating field backgrounds so field boundaries pop at a glance.
+    sciV(SCI_STYLESETFORE, SCE_HL7_SEGMENT_ID, 0xC00000);  // bold blue
     sciV(SCI_STYLESETBOLD, SCE_HL7_SEGMENT_ID, 1);
 
-    sciV(SCI_STYLESETFORE, SCE_HL7_FIELD_SEP, 0x888888);
-    sciV(SCI_STYLESETFORE, SCE_HL7_COMPONENT_SEP, 0xAAAAAA);
-    sciV(SCI_STYLESETFORE, SCE_HL7_REPEAT_SEP, 0xBBBBBB);
+    sciV(SCI_STYLESETFORE, SCE_HL7_FIELD_SEP, 0x0A66C8);   // orange pipes stand out
+    sciV(SCI_STYLESETFORE, SCE_HL7_COMPONENT_SEP, 0x999999);
+    sciV(SCI_STYLESETFORE, SCE_HL7_REPEAT_SEP, 0xAAAAAA);
     sciV(SCI_STYLESETFORE, SCE_HL7_ESCAPE_SEP, 0x888888);
-    sciV(SCI_STYLESETFORE, SCE_HL7_SUBCOMP_SEP, 0xCCCCCC);
+    sciV(SCI_STYLESETFORE, SCE_HL7_SUBCOMP_SEP, 0xBBBBBB);
 
-    sciV(SCI_STYLESETFORE, SCE_HL7_ESCAPE_SEQ, 0x008888);
+    sciV(SCI_STYLESETFORE, SCE_HL7_ESCAPE_SEQ, 0x008888);  // teal
     sciV(SCI_STYLESETBOLD, SCE_HL7_ESCAPE_SEQ, 1);
 
-    sciV(SCI_STYLESETFORE, SCE_HL7_FIELD_VALUE, 0x000000);
+    // Field values: alternating shades. Odd fields plain, even fields on a light
+    // tint — both dark text so everything stays readable.
+    sciV(SCI_STYLESETFORE, SCE_HL7_FIELD_VALUE, 0x202020);
+    sciV(SCI_STYLESETFORE, SCE_HL7_FIELD_VALUE_ALT, 0x202020);
+    sciV(SCI_STYLESETBACK, SCE_HL7_FIELD_VALUE_ALT, 0xF7F0E6);  // very light blue-gray
 
     enableTooltips(true);
 }
@@ -198,16 +205,21 @@ void ScintillaStyler::styleRange(int startPos, int endPos) {
             std::vector<HL7Token> tokens;
             lexer.tokenize(wline.c_str(), (int)wline.size(), tokens);
 
+            // Alternate field-value shading: each field separator advances the
+            // field counter, and field values pick their style by its parity.
+            int fieldIdx = 0;
             for (const auto& token : tokens) {
                 int style = SCE_HL7_DEFAULT;
                 switch (token.type) {
                     case HL7TokenType::SEGMENT_ID:   style = SCE_HL7_SEGMENT_ID; break;
-                    case HL7TokenType::FIELD_SEP:    style = SCE_HL7_FIELD_SEP; break;
+                    case HL7TokenType::FIELD_SEP:    style = SCE_HL7_FIELD_SEP; fieldIdx++; break;
                     case HL7TokenType::COMPONENT_SEP: style = SCE_HL7_COMPONENT_SEP; break;
                     case HL7TokenType::REPEAT_SEP:   style = SCE_HL7_REPEAT_SEP; break;
                     case HL7TokenType::ESCAPE_SEQ:   style = SCE_HL7_ESCAPE_SEQ; break;
                     case HL7TokenType::SUBCOMP_SEP:  style = SCE_HL7_SUBCOMP_SEP; break;
-                    case HL7TokenType::FIELD_VALUE:  style = SCE_HL7_FIELD_VALUE; break;
+                    case HL7TokenType::FIELD_VALUE:
+                        style = (fieldIdx & 1) ? SCE_HL7_FIELD_VALUE : SCE_HL7_FIELD_VALUE_ALT;
+                        break;
                 }
 
                 int utf8Len = WideCharToMultiByte(CP_UTF8, 0, wline.c_str() + token.startPos, token.length, nullptr, 0, nullptr, nullptr);

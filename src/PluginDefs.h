@@ -11,6 +11,7 @@
 #define SCE_HL7_ESCAPE_SEQ 7
 #define SCE_HL7_FIELD_VALUE 8
 #define SCE_HL7_COMMENT 9
+#define SCE_HL7_FIELD_VALUE_ALT 10  // alternate field shade (every other field)
 
 #define HL7_PLUGIN_NAME L"PipeHat"
 #define HL7_PLUGIN_VERSION L"1.3.0"
