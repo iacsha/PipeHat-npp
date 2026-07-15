@@ -1618,14 +1618,6 @@ static void cmdAbout() {
         L"tooltips, message tree, PHI scrubbing, conformance and structural\r\n"
         L"validation, side-by-side compare, and MLLP send/receive.\r\n"
         L"\r\n"
-        L"Hotkeys  (Ctrl+Alt+ ...)\r\n"
-        L"    View       T tree    G fold    R reformat    E enable\r\n"
-        L"    Navigate   \x2190 / \x2192 field    K copy path\r\n"
-        L"    Check      C conformance    V validate    D compare views\r\n"
-        L"    Privacy    H scrub PHI\r\n"
-        L"    Network    M send    L listen     (off by default)\r\n"
-        L"    Other      P settings    W copy as rich text\r\n"
-        L"\r\n"
         L"Activates on MSH / FHS / BHS content or a .hl7 file.\r\n"
         L"github.com/iacsha/PipeHat-npp",
         L"About PipeHat", MB_OK | MB_ICONINFORMATION);
