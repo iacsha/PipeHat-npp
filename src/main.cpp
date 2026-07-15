@@ -1433,11 +1433,36 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
             else if (notifyCode->nmhdr.hwndFrom == g_viewSub.hWnd) view = &g_viewSub;
 
             if (view && view->isHL7) {
-                view->styler.styleAll();
-                view->lexer.reset();
-                setFoldLevels(*view);
+                // M7: incremental styling. Re-style only the lines the edit touched
+                // instead of the whole document, so typing in a multi-MB log stays
+                // responsive. styleRange re-derives delimiters from MSH each call, so
+                // the styled range is correct on its own — the only cross-line
+                // dependency is the MSH delimiter line, so edits there fall back to a
+                // full restyle.
+                SciFnDirect fn = view->fnDirect;
+                sptr_t ptr = view->ptrDirect;
+                int pos = (int)notifyCode->position;
+                int startLine = (int)fn(ptr, SCI_LINEFROMPOSITION, pos, 0);
+                int linesAdded = notifyCode->linesAdded;
+                int endLine = startLine + (linesAdded > 0 ? linesAdded : 0);
 
-                if (notifyCode->length > 0 || notifyCode->linesAdded != 0) {
+                std::wstring firstLine = getLineW(fn, ptr, startLine);
+                bool mshTouched =
+                    (view->lexer.extractSegmentID(firstLine.c_str(), (int)firstLine.size()) == L"MSH");
+
+                if (mshTouched) {
+                    view->lexer.reset();
+                    view->styler.styleAll();
+                } else {
+                    int a = (int)fn(ptr, SCI_POSITIONFROMLINE, startLine, 0);
+                    int b = (int)fn(ptr, SCI_GETLINEENDPOSITION, endLine, 0);
+                    view->styler.styleRange(a, b);
+                }
+
+                // Fold structure and HL7 detection only change when lines are
+                // added/removed — skip that work on plain in-line typing.
+                if (linesAdded != 0) {
+                    setFoldLevels(*view);
                     checkAndEnableHL7(*view);
                 }
             }
