@@ -157,9 +157,17 @@ in **Settings → MLLP**.
 - **Send Message (MLLP)** (`Ctrl+Alt+Shift+M`) — frames the active message, sends it to the configured
   host/port on a background thread, and shows the returned ACK/NAK (`MSA-1` + control id).
 - **Toggle MLLP Listener** (`Ctrl+Alt+Shift+L`) — starts/stops an MLLP server. Each inbound
-  message is auto-acknowledged (`AA`), **saved** to `plugins\config\received\` as
-  `<type>_<controlId>_<time>.hl7`, and opened in a tab. The menu item shows a checkmark while
-  listening. ⚠️ Saved messages may contain PHI — treat that folder accordingly.
+  message is auto-acknowledged (`AA`) and opened in a tab (colored like any HL7 buffer). The menu
+  item shows a checkmark while listening.
+
+**Saving received messages is OFF by default.** Inbound messages open as in-memory tabs only —
+no PHI touches disk. If you enable *Save received messages to disk* in **Settings → MLLP**, each
+message is written to `%LOCALAPPDATA%\PipeHat\received\` as `<type>_<controlId>_<time>.hl7`
+(deliberately under `LOCALAPPDATA`, not the roaming plugin-config folder, so cleartext PHI can't
+be carried off the machine by roaming profiles or backup agents). ⚠️ Those files are unencrypted
+PHI — use **Plugins → PipeHat → Clear Received Messages** to purge them, and keep the machine
+itself encrypted (BitLocker/EFS) if you turn saving on. Note Notepad++'s own periodic-backup
+feature, if enabled, may make additional copies of opened files in its `backup\` folder.
 
 The listener **binds to loopback (`127.0.0.1`) only** unless you both tick *Allow binding a
 non-loopback interface* and supply a bind address — and even then a confirmation warns you that

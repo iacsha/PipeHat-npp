@@ -217,6 +217,7 @@ void populateMllp(HWND hDlg) {
     setChecked(hDlg, IDC_MLLP_ALLOWNONLOOP, g_cfg->allowNonLoopback);
     SetDlgItemTextW(hDlg, IDC_MLLP_BINDADDR, g_cfg->bindAddr.c_str());
     EnableWindow(GetDlgItem(hDlg, IDC_MLLP_BINDADDR), g_cfg->allowNonLoopback);
+    setChecked(hDlg, IDC_MLLP_SAVERECV, g_cfg->saveReceived);
 }
 
 void readMllp(HWND hDlg) {
@@ -231,6 +232,7 @@ void readMllp(HWND hDlg) {
     g_cfg->allowNonLoopback = isChecked(hDlg, IDC_MLLP_ALLOWNONLOOP);
     g_cfg->bindAddr = getText(hDlg, IDC_MLLP_BINDADDR);
     if (g_cfg->bindAddr.empty()) g_cfg->bindAddr = L"127.0.0.1";
+    g_cfg->saveReceived = isChecked(hDlg, IDC_MLLP_SAVERECV);
 }
 
 INT_PTR CALLBACK ruleProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM) {

@@ -130,7 +130,7 @@ static int g_healCount = 0;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[19];
+static FuncItem g_funcItems[20];
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -579,6 +579,45 @@ static std::wstring configDirW() {
     return d[0] ? std::wstring(d) : std::wstring();
 }
 
+// Where received messages are saved when saving is enabled: %LOCALAPPDATA%\PipeHat\received.
+// Deliberately under LOCAL (not the Roaming plugin-config dir) so cleartext PHI can't be
+// carried off the machine by roaming profiles / profile-backup agents. Creates the dirs.
+static std::wstring receivedDir() {
+    wchar_t base[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return std::wstring();
+    std::wstring d = std::wstring(base) + L"\\PipeHat";
+    CreateDirectoryW(d.c_str(), nullptr);
+    d += L"\\received";
+    CreateDirectoryW(d.c_str(), nullptr);
+    return d;
+}
+
+// Purge saved received messages. Files currently open in Notepad++ stay locked
+// and are left in place (close them first to remove those).
+static void cmdClearReceived() {
+    std::wstring dir = receivedDir();
+    if (dir.empty()) return;
+    int deleted = 0, locked = 0;
+    WIN32_FIND_DATAW fd;
+    std::wstring pat = dir + L"\\*.hl7";
+    HANDLE h = FindFirstFileW(pat.c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            std::wstring f = dir + L"\\" + fd.cFileName;
+            if (DeleteFileW(f.c_str())) deleted++; else locked++;
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    logEvent(L"MLLP", L"Cleared received messages (" + std::to_wstring(deleted) + L" deleted, " +
+             std::to_wstring(locked) + L" locked)");
+    std::wstring m = L"Deleted " + std::to_wstring(deleted) + L" saved message file(s) from\r\n" + dir;
+    if (locked > 0) m += L"\r\n\r\n" + std::to_wstring(locked) + L" file(s) are open in Notepad++ and were left "
+                         L"in place \x2014 close those tabs and clear again to remove them.";
+    MessageBoxW(g_nppData._nppHandle, m.c_str(), L"PipeHat \x2014 Clear Received Messages",
+                MB_OK | MB_ICONINFORMATION);
+}
+
 // Path of the active conformance profile (default = PipeHat.profile).
 static std::wstring activeProfilePath() {
     std::wstring dir = configDirW();
@@ -647,6 +686,7 @@ static void loadMllpConfig() {
     g_mllp.listenPort = GetPrivateProfileIntW(L"MLLP", L"ListenPort", 2575, ini.c_str());
     g_mllp.allowNonLoopback = GetPrivateProfileIntW(L"MLLP", L"AllowNonLoopback", 0, ini.c_str()) != 0;
     GetPrivateProfileStringW(L"MLLP", L"BindAddr", L"127.0.0.1", buf, 256, ini.c_str()); g_mllp.bindAddr = buf;
+    g_mllp.saveReceived = GetPrivateProfileIntW(L"MLLP", L"SaveReceived", 0, ini.c_str()) != 0;
     GetPrivateProfileStringW(L"Conformance", L"ActiveProfile", L"", buf, 256, ini.c_str()); g_activeProfile = buf;
 }
 
@@ -659,6 +699,7 @@ static void saveMllpConfig() {
     WritePrivateProfileStringW(L"MLLP", L"ListenPort", std::to_wstring(g_mllp.listenPort).c_str(), ini.c_str());
     WritePrivateProfileStringW(L"MLLP", L"AllowNonLoopback", g_mllp.allowNonLoopback ? L"1" : L"0", ini.c_str());
     WritePrivateProfileStringW(L"MLLP", L"BindAddr", g_mllp.bindAddr.c_str(), ini.c_str());
+    WritePrivateProfileStringW(L"MLLP", L"SaveReceived", g_mllp.saveReceived ? L"1" : L"0", ini.c_str());
     WritePrivateProfileStringW(L"Conformance", L"ActiveProfile", g_activeProfile.c_str(), ini.c_str());
 }
 
@@ -674,10 +715,16 @@ static std::string genControlId() {
 // One-time-per-session confirmation that PHI will cross the wire in cleartext.
 static bool confirmCleartextOnce() {
     if (g_mllpCleartextAcked) return true;
-    int r = MessageBoxW(g_nppData._nppHandle,
+    std::wstring msg =
         L"MLLP sends and receives HL7 in CLEARTEXT over TCP.\r\n\r\n"
         L"Protected Health Information (PHI) will cross the network unencrypted. "
-        L"Only use this over loopback or a trusted network.\r\n\r\nContinue?",
+        L"Only use this over loopback or a trusted network.";
+    if (g_mllp.saveReceived)
+        msg += L"\r\n\r\nReceived messages are ALSO SAVED UNENCRYPTED under:\r\n"
+               L"%LOCALAPPDATA%\\PipeHat\\received\r\n"
+               L"(Plugins > PipeHat > Clear Received Messages to purge.)";
+    msg += L"\r\n\r\nContinue?";
+    int r = MessageBoxW(g_nppData._nppHandle, msg.c_str(),
         L"PipeHat MLLP \x2014 Cleartext Warning",
         MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST);
     if (r == IDYES) { g_mllpCleartextAcked = true; return true; }
@@ -766,25 +813,26 @@ static LRESULT CALLBACK mllpWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 std::string fname = sanitize(type) + "_" +
                                     (ctrl.empty() ? std::string() : sanitize(ctrl) + "_") + ts + ".hl7";
 
-                // Save to <config>\received\ and open the file. A titled .hl7 buffer
-                // activates via its extension and keeps its coloring reliably — far
-                // more robust than an untitled "new N" buffer.
-                bool opened = false;
-                std::wstring dir = configDirW();
-                if (!dir.empty()) {
-                    dir += L"\\received";
-                    CreateDirectoryW(dir.c_str(), nullptr);
-                    std::wstring path = dir + L"\\" + utf8ToW(fname);
-                    std::ofstream out(path.c_str(), std::ios::binary);
-                    if (out) {
-                        out.write(disp.data(), (std::streamsize)disp.size());
-                        out.close();
-                        if (SendMessage(g_nppData._nppHandle, NPPM_DOOPEN, 0, (LPARAM)path.c_str()))
-                            opened = true;
+                // Only write PHI to disk when the user has opted in (Settings > MLLP >
+                // Save received messages). Otherwise the message opens as an in-memory
+                // buffer only — colored identically by the SCN_PAINTED self-heal, with
+                // no cleartext PHI left on the filesystem. A saved .hl7 also activates
+                // reliably via its extension.
+                bool savedToDisk = false;
+                if (g_mllp.saveReceived) {
+                    std::wstring dir = receivedDir();
+                    if (!dir.empty()) {
+                        std::wstring path = dir + L"\\" + utf8ToW(fname);
+                        std::ofstream out(path.c_str(), std::ios::binary);
+                        if (out) {
+                            out.write(disp.data(), (std::streamsize)disp.size());
+                            out.close();
+                            if (SendMessage(g_nppData._nppHandle, NPPM_DOOPEN, 0, (LPARAM)path.c_str()))
+                                savedToDisk = true;
+                        }
                     }
                 }
-                // Fallback to an untitled buffer if saving/opening failed.
-                if (!opened) {
+                if (!savedToDisk) {
                     SendMessage(g_nppData._nppHandle, NPPM_MENUCOMMAND, 0, IDM_FILE_NEW);
                     HWND hNew = getCurrentScintilla();
                     if (hNew) {
@@ -799,8 +847,8 @@ static LRESULT CALLBACK mllpWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 updateTreeVisibility(view);
 
                 logEvent(L"MLLP", L"Inbound type=" + utf8ToW(type) + L" control=" + utf8ToW(ctrl) +
-                         L" segments=" + std::to_wstring((int)segs.size()) +
-                         L", ACK AA, saved " + utf8ToW(fname));
+                         L" segments=" + std::to_wstring((int)segs.size()) + L", ACK AA, " +
+                         (savedToDisk ? (L"saved " + utf8ToW(fname)) : std::wstring(L"in-memory (not saved)")));
                 delete payload;
             }
             return 0;
@@ -1920,6 +1968,12 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Open Event Log");
     g_funcItems[g_nbFuncItems]._pFunc = cmdOpenEventLog;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Clear Received Messages");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdClearReceived;
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_nbFuncItems++;

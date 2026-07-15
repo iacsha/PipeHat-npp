@@ -11,6 +11,7 @@ struct MllpConfig {
     int          listenPort = 2575;            // listener port
     bool         allowNonLoopback = false;     // opt-in to bind a real interface
     std::wstring bindAddr = L"127.0.0.1";      // listener bind address
+    bool         saveReceived = false;         // opt-in: write inbound messages to disk (cleartext PHI)
 
     // The address the listener should actually bind: loopback unless the user
     // both opted in AND supplied a non-empty address. Fail-safe by construction.

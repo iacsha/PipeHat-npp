@@ -13,7 +13,7 @@ END
 // Dialog 2 (IDD_SETTINGS) — PipeHat settings: conformance rules plus the MLLP
 // network section. Conformance rules persist to PipeHat.profile; MLLP settings
 // to PipeHat.ini.
-IDD_SETTINGS DIALOGEX 0, 0, 344, 340
+IDD_SETTINGS DIALOGEX 0, 0, 344, 356
 STYLE DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "PipeHat Settings"
 FONT 8, "MS Shell Dlg"
@@ -31,25 +31,27 @@ BEGIN
     PUSHBUTTON      "&Edit...", IDC_RULE_EDIT, 63, 148, 52, 14
     PUSHBUTTON      "&Remove", IDC_RULE_REMOVE, 119, 148, 52, 14
 
-    GROUPBOX        "MLLP (network) - HL7 over TCP", -1, 7, 170, 330, 122
+    GROUPBOX        "MLLP (network) - HL7 over TCP", -1, 7, 170, 330, 138
     AUTOCHECKBOX    "Enable MLLP networking (off by default)", IDC_MLLP_ENABLE, 14, 184, 200, 10
-    LTEXT           "Send to Host:", -1, 14, 202, 54, 10
-    EDITTEXT        IDC_MLLP_HOST, 70, 200, 120, 12, ES_AUTOHSCROLL
-    LTEXT           "Port:", -1, 200, 202, 20, 10
-    EDITTEXT        IDC_MLLP_SENDPORT, 222, 200, 40, 12, ES_NUMBER | ES_AUTOHSCROLL
-    LTEXT           "Listener port:", -1, 14, 220, 54, 10
-    EDITTEXT        IDC_MLLP_LISTENPORT, 70, 218, 40, 12, ES_NUMBER | ES_AUTOHSCROLL
+    AUTOCHECKBOX    "Save received messages to disk (writes cleartext PHI - off by default)",
+                    IDC_MLLP_SAVERECV, 14, 198, 320, 10
+    LTEXT           "Send to Host:", -1, 14, 216, 54, 10
+    EDITTEXT        IDC_MLLP_HOST, 70, 214, 120, 12, ES_AUTOHSCROLL
+    LTEXT           "Port:", -1, 200, 216, 20, 10
+    EDITTEXT        IDC_MLLP_SENDPORT, 222, 214, 40, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "Listener port:", -1, 14, 234, 54, 10
+    EDITTEXT        IDC_MLLP_LISTENPORT, 70, 232, 40, 12, ES_NUMBER | ES_AUTOHSCROLL
     AUTOCHECKBOX    "Allow binding a non-loopback interface (exposes a receiver on your network)",
-                    IDC_MLLP_ALLOWNONLOOP, 14, 236, 320, 10
-    LTEXT           "Bind address:", -1, 14, 252, 54, 10
-    EDITTEXT        IDC_MLLP_BINDADDR, 70, 250, 120, 12, ES_AUTOHSCROLL
+                    IDC_MLLP_ALLOWNONLOOP, 14, 250, 320, 10
+    LTEXT           "Bind address:", -1, 14, 266, 54, 10
+    EDITTEXT        IDC_MLLP_BINDADDR, 70, 264, 120, 12, ES_AUTOHSCROLL
     LTEXT           "Warning: MLLP is cleartext - PHI crosses the network unencrypted. Use loopback or a trusted network only.",
-                    -1, 14, 268, 320, 20
+                    -1, 14, 282, 320, 20
 
-    DEFPUSHBUTTON   "&Save", IDOK, 229, 302, 52, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 285, 302, 52, 14
+    DEFPUSHBUTTON   "&Save", IDOK, 229, 318, 52, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 285, 318, 52, 14
     LTEXT           "Saved in the Notepad++ plugin config folder (PipeHat.profile / PipeHat.ini).",
-                    -1, 7, 322, 330, 10
+                    -1, 7, 338, 330, 10
 END
 
 // Dialog 3 (IDD_RULE) — add or edit a single conformance rule.
