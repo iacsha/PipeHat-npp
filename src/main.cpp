@@ -695,13 +695,19 @@ static bool isNewerVersion(const std::wstring& latest, const std::wstring& cur) 
 // touch Notepad++.
 static LRESULT CALLBACK mllpWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
-        case WM_PIPEHAT_RESTYLE: {
-            // Runs after Notepad++ has finished activating a buffer (posted from
-            // NPPN_BUFFERACTIVATED), so our container lexer + styling is applied
-            // LAST and isn't overwritten by NPP re-applying the buffer's language.
-            ScintillaView& view = getCurrentView();
-            checkAndEnableHL7(view);
-            updateTreeVisibility(view);
+        case WM_TIMER: {
+            if (w == 1) {
+                KillTimer(h, 1);
+                // Fires ~80ms after buffer activation — well after NPP has finished
+                // switching AND re-applying the buffer's (NULL) language lexer, so
+                // our container lexer + styling is applied LAST and sticks. This is
+                // the same "after it settles" timing that already makes tab-close
+                // coloring work (NPPN_FILECLOSED). A synchronous or PostMessage
+                // re-style ran too early and got overwritten.
+                ScintillaView& view = getCurrentView();
+                checkAndEnableHL7(view);
+                updateTreeVisibility(view);
+            }
             return 0;
         }
         case WM_MLLP_RECEIVED: {
@@ -1762,21 +1768,23 @@ extern "C" __declspec(dllexport) const wchar_t* getName() {
 extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     // Keyboard shortcuts. Ctrl+Alt combos are chosen to avoid Notepad++ defaults;
     // any conflict can be remapped by the user via Settings > Shortcut Mapper > Plugins.
-    g_skScrub      = { true, true, false, 'H' };            // Ctrl+Alt+H  — scrub PHI
-    g_skTree       = { true, true, false, 'T' };            // Ctrl+Alt+T  — toggle tree
-    g_skFold       = { true, true, false, 'G' };            // Ctrl+Alt+G  — toggle folding (F is NPP "Collapse level")
-    g_skNextField  = { true, true, false, VK_RIGHT };      // Ctrl+Alt+Right — next field
-    g_skPrevField  = { true, true, false, VK_LEFT };       // Ctrl+Alt+Left  — prev field
-    g_skCheck      = { true, true, false, 'C' };            // Ctrl+Alt+C  — check conformance
-    g_skPretty     = { true, true, false, 'R' };            // Ctrl+Alt+R  — reformat / pretty-print
-    g_skEnable     = { true, true, false, 'E' };            // Ctrl+Alt+E  — force-enable HL7 mode
-    g_skValidate   = { true, true, false, 'V' };            // Ctrl+Alt+V  — validate / malform check
-    g_skCompare    = { true, true, false, 'D' };            // Ctrl+Alt+D  — compare the two views
-    g_skSettings   = { true, true, false, 'P' };            // Ctrl+Alt+P  — settings (S is NPP "Save As")
-    g_skMllpSend   = { true, true, false, 'M' };            // Ctrl+Alt+M  — MLLP send message
-    g_skMllpListen = { true, true, true, 'L' };             // Ctrl+Alt+Shift+L — MLLP listener toggle (Ctrl+Alt+L is grabbed on some machines)
-    g_skCopyPath   = { true, true, false, 'K' };            // Ctrl+Alt+K  — copy field path
-    g_skCopyRtf    = { true, true, false, 'W' };            // Ctrl+Alt+W  — copy as rich text
+    // All Ctrl+Alt+Shift+ combos — plain Ctrl+Alt+<letter> gets grabbed by other
+    // software on some machines; adding Shift dodges those interceptions.
+    g_skScrub      = { true, true, true, 'H' };             // Ctrl+Alt+Shift+H  — scrub PHI
+    g_skTree       = { true, true, true, 'T' };             // Ctrl+Alt+Shift+T  — toggle tree
+    g_skFold       = { true, true, true, 'G' };             // Ctrl+Alt+Shift+G  — toggle folding
+    g_skNextField  = { true, true, true, VK_RIGHT };        // Ctrl+Alt+Shift+Right — next field
+    g_skPrevField  = { true, true, true, VK_LEFT };         // Ctrl+Alt+Shift+Left  — prev field
+    g_skCheck      = { true, true, true, 'C' };             // Ctrl+Alt+Shift+C  — check conformance
+    g_skPretty     = { true, true, true, 'R' };             // Ctrl+Alt+Shift+R  — reformat / pretty-print
+    g_skEnable     = { true, true, true, 'E' };             // Ctrl+Alt+Shift+E  — force-enable HL7 mode
+    g_skValidate   = { true, true, true, 'V' };             // Ctrl+Alt+Shift+V  — validate / malform check
+    g_skCompare    = { true, true, true, 'D' };             // Ctrl+Alt+Shift+D  — compare the two views
+    g_skSettings   = { true, true, true, 'P' };             // Ctrl+Alt+Shift+P  — settings
+    g_skMllpSend   = { true, true, true, 'M' };             // Ctrl+Alt+Shift+M  — MLLP send message
+    g_skMllpListen = { true, true, true, 'L' };             // Ctrl+Alt+Shift+L  — MLLP listener toggle
+    g_skCopyPath   = { true, true, true, 'K' };             // Ctrl+Alt+Shift+K  — copy field path
+    g_skCopyRtf    = { true, true, true, 'W' };             // Ctrl+Alt+Shift+W  — copy as rich text
 
     g_nbFuncItems = 0;
 
@@ -1925,10 +1933,11 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
             // user wants it) and hide it when switching to / closing into a non-HL7
             // buffer.
             updateTreeVisibility(view);
-            // Re-assert styling AFTER activation settles — NPP re-applies the
-            // buffer's language lexer around this notification and would otherwise
-            // win the race, leaving switched-to HL7 tabs plain.
-            if (g_hMllpWnd) PostMessageW(g_hMllpWnd, WM_PIPEHAT_RESTYLE, 0, 0);
+            // Re-assert styling AFTER activation fully settles. NPP re-applies the
+            // buffer's language lexer around this notification (wiping our colors),
+            // and it does so LATER than a synchronous or posted re-style runs — so
+            // a short timer is used to land after NPP is completely done.
+            if (g_hMllpWnd) SetTimer(g_hMllpWnd, 1, 80, nullptr);
             break;
         }
 
