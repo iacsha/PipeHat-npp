@@ -182,7 +182,9 @@ Protocol (MLLP) framing (`<VT>` 0x0B … message … `<FS>` 0x1C `<CR>` 0x0D):
   and per-interface profile switching (multiple named profile files).
 - **Pretty-print / reformat** — expand a packed message to one-field-per-line and back.
 - **Segment folding** — the menu command exists; set fold levels per segment so it actually collapses.
-- **Copy field path** — right-click a value → copy `PID-5.1` (matches Mirth/BridgeLink channel references).
+- **Copy field path** ✅ **done** — Copy Field Path (Ctrl+Alt+K) copies the HL7 path at the caret
+  (`PID-5.1.2`, component/subcomponent-aware, MSH off-by-one honored), matching Mirth/BridgeLink
+  references; transient calltip confirms. (Right-click context-menu entry still a possible nicety.)
 - **Copy as rich text (RTF/HTML)** 💡 — copy the message *with its syntax colors* so it pastes into
   Word/Outlook formatted. Scintilla's `Ctrl+C` is plain-text only (colors are a render layer), and
   the NppExport plugin is the current workaround; a native HL7-aware "Copy as rich text" would remove

@@ -75,7 +75,7 @@ static bool g_treeIntent = false;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[14];
+static FuncItem g_funcItems[15];
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -90,6 +90,7 @@ static ShortcutKey g_skCompare;
 static ShortcutKey g_skSettings;
 static ShortcutKey g_skMllpSend;
 static ShortcutKey g_skMllpListen;
+static ShortcutKey g_skCopyPath;
 
 // ── Helpers ──
 static HWND getCurrentScintilla() {
@@ -1142,6 +1143,149 @@ static void cmdCompareViews() {
     }
 }
 
+// ── Copy field path (Mirth/BridgeLink-style SEG-field.comp.sub) ──
+
+// Work out the HL7 path at a caret byte position and the field's byte range.
+struct CaretField {
+    bool ok = false;
+    std::wstring path;       // e.g. "PID", "PID-5", "PID-5.1", "PID-5.1.2"
+    int fieldStartByte = 0;  // absolute doc byte range of the whole field
+    int fieldEndByte = 0;
+};
+
+static CaretField analyzeCaretField(SciFnDirect fn, sptr_t ptr, int caretPos) {
+    CaretField r;
+    if (!fn) return r;
+
+    HL7Lexer lexer;
+    int lineCount = (int)fn(ptr, SCI_GETLINECOUNT, 0, 0);
+    for (int li = 0; li < lineCount; li++) {
+        std::wstring wl = getLineW(fn, ptr, li);
+        if (lexer.extractSegmentID(wl.c_str(), (int)wl.size()) == L"MSH") {
+            lexer.parseMSH(wl.c_str(), (int)wl.size()); break;
+        }
+    }
+    wchar_t fieldSep = lexer.delimiters().fieldSep;
+    wchar_t compSep  = lexer.delimiters().compSep;
+    wchar_t subSep   = lexer.delimiters().subcompSep;
+
+    int line = (int)fn(ptr, SCI_LINEFROMPOSITION, caretPos, 0);
+    int lineStart = (int)fn(ptr, SCI_POSITIONFROMLINE, line, 0);
+    std::string u8 = getLineUtf8(fn, ptr, line);
+    std::wstring w = utf8ToW(u8);
+    std::wstring segId = lexer.extractSegmentID(w.c_str(), (int)w.size());
+    if (segId.empty()) return r;
+    bool isMSH = (segId == L"MSH");
+
+    int caretByte = caretPos - lineStart;
+    if (caretByte < 0) caretByte = 0;
+    if (caretByte > (int)u8.size()) caretByte = (int)u8.size();
+    int caretW = MultiByteToWideChar(CP_UTF8, 0, u8.data(), caretByte, nullptr, 0);
+    if (caretW < 0) caretW = 0;
+
+    // Locate the field the caret sits in and its wchar range. Field 0 is the
+    // segment-id region (before the first field separator).
+    int curField = 0, fStartW = 0, fEndW = (int)w.size();
+    {
+        int fieldIndex = 0, startW = 0;
+        for (int i = 0; i <= (int)w.size(); i++) {
+            bool atSep = (i < (int)w.size() && w[i] == fieldSep);
+            bool atEnd = (i == (int)w.size());
+            if (atSep || atEnd) {
+                if (caretW >= startW && caretW <= i) { fStartW = startW; fEndW = i; curField = fieldIndex; break; }
+                fieldIndex++; startW = i + 1;
+            }
+        }
+    }
+
+    if (curField == 0) {   // caret in the segment id itself
+        r.ok = true; r.path = segId;
+        r.fieldStartByte = lineStart;
+        r.fieldEndByte = lineStart + (int)u8.size();
+        return r;
+    }
+
+    int fieldNo = isMSH ? (curField + 1) : curField;
+    std::wstring field = w.substr(fStartW, fEndW - fStartW);
+    int caretInField = caretW - fStartW;
+
+    // component within field, subcomponent within component
+    int compNo = 1, cStart = 0, cEnd = (int)field.size();
+    {
+        int idx = 1, start = 0;
+        for (int i = 0; i <= (int)field.size(); i++) {
+            bool atSep = (i < (int)field.size() && field[i] == compSep);
+            bool atEnd = (i == (int)field.size());
+            if (atSep || atEnd) {
+                if (caretInField >= start && caretInField <= i) { compNo = idx; cStart = start; cEnd = i; break; }
+                idx++; start = i + 1;
+            }
+        }
+    }
+    std::wstring comp = field.substr(cStart, cEnd - cStart);
+    int caretInComp = caretInField - cStart;
+    int subNo = 1;
+    {
+        int idx = 1, start = 0;
+        for (int i = 0; i <= (int)comp.size(); i++) {
+            bool atSep = (i < (int)comp.size() && comp[i] == subSep);
+            bool atEnd = (i == (int)comp.size());
+            if (atSep || atEnd) {
+                if (caretInComp >= start && caretInComp <= i) { subNo = idx; break; }
+                idx++; start = i + 1;
+            }
+        }
+    }
+
+    r.path = segId + L"-" + std::to_wstring(fieldNo);
+    if (field.find(compSep) != std::wstring::npos) {
+        r.path += L"." + std::to_wstring(compNo);
+        if (comp.find(subSep) != std::wstring::npos)
+            r.path += L"." + std::to_wstring(subNo);
+    }
+
+    int preBytes = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), fStartW, nullptr, 0, nullptr, nullptr);
+    int fldBytes = WideCharToMultiByte(CP_UTF8, 0, w.c_str() + fStartW, fEndW - fStartW, nullptr, 0, nullptr, nullptr);
+    if (preBytes < 0) preBytes = 0;
+    if (fldBytes < 0) fldBytes = 0;
+    r.ok = true;
+    r.fieldStartByte = lineStart + preBytes;
+    r.fieldEndByte = lineStart + preBytes + fldBytes;
+    return r;
+}
+
+// Copy the HL7 path at the caret to the clipboard (e.g. PID-5.1), matching how
+// Mirth / BridgeLink reference fields. Feedback is a transient calltip.
+static void cmdCopyFieldPath() {
+    ScintillaView& view = getCurrentView();
+    if (!view.isHL7 || !view.fnDirect) {
+        MessageBoxW(g_nppData._nppHandle, L"No HL7 document is currently active.",
+                    L"Copy Field Path", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    int pos = (int)view.fnDirect(view.ptrDirect, SCI_GETCURRENTPOS, 0, 0);
+    CaretField cf = analyzeCaretField(view.fnDirect, view.ptrDirect, pos);
+    if (!cf.ok) {
+        MessageBoxW(g_nppData._nppHandle, L"Place the caret inside a segment first.",
+                    L"Copy Field Path", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    if (OpenClipboard(g_nppData._nppHandle)) {
+        EmptyClipboard();
+        size_t bytes = (cf.path.size() + 1) * sizeof(wchar_t);
+        HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if (h) {
+            void* p = GlobalLock(h);
+            if (p) { memcpy(p, cf.path.c_str(), bytes); GlobalUnlock(h); SetClipboardData(CF_UNICODETEXT, h); }
+        }
+        CloseClipboard();
+    }
+
+    std::string tip = wToUtf8(L"Copied: " + cf.path);
+    view.fnDirect(view.ptrDirect, SCI_CALLTIPSHOW, pos, (sptr_t)tip.c_str());
+}
+
 // ── Menu commands ──
 static void cmdAbout() {
     MessageBoxW(g_nppData._nppHandle,
@@ -1259,6 +1403,7 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skSettings   = { true, true, false, 'P' };            // Ctrl+Alt+P  — settings (S is NPP "Save As")
     g_skMllpSend   = { true, true, false, 'M' };            // Ctrl+Alt+M  — MLLP send message
     g_skMllpListen = { true, true, false, 'L' };            // Ctrl+Alt+L  — MLLP listener toggle
+    g_skCopyPath   = { true, true, false, 'K' };            // Ctrl+Alt+K  — copy field path
 
     g_nbFuncItems = 0;
 
@@ -1352,6 +1497,13 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_funcItems[g_nbFuncItems]._pShKey = &g_skMllpListen;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Copy Field Path");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdCopyFieldPath;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skCopyPath;
     g_nbFuncItems++;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"About PipeHat");
