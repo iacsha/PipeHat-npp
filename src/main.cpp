@@ -2076,7 +2076,7 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
             int fore = (int)fn(ptr, SCI_STYLEGETFORE, SCE_HL7_SEGMENT_ID, 0);
             bool bytesOk = (st0 == SCE_HL7_SEGMENT_ID);             // style bytes intact
             bool defsOk  = (fore == 0xC00000);                      // style defs intact (theme re-apply resets these)
-            if (bytesOk && defsOk) break;                           // healthy
+            if (bytesOk && defsOk) { g_healCount = 0; break; }      // healthy — replenish heal budget
 
             // Unhealthy: confirm it really is HL7 on the settled document, then heal.
             if (!ScintillaStyler::detectHL7(view->hWnd, fn, ptr) && !currentPathHasHl7Ext()) {
