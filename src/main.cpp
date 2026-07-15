@@ -1004,7 +1004,7 @@ static void cmdAbout() {
         L"message tree, PHI scrubbing, conformance + structural validation,\r\n"
         L"compare/diff, pretty-print, folding, and MLLP send/receive.\r\n\r\n"
         L"Hotkeys (Ctrl+Alt+ ...): T tree, H scrub, C check, V validate,\r\n"
-        L"D diff, R reformat, E enable, F fold, S settings, M send, L listen,\r\n"
+        L"D diff, R reformat, E enable, G fold, P settings, M send, L listen,\r\n"
         L"Left/Right field nav. Activates on MSH/FHS/BHS content or a .hl7 file.\r\n\r\n"
         L"MLLP networking is OFF by default \x2014 enable it in Settings.",
         L"About PipeHat", MB_OK | MB_ICONINFORMATION);
@@ -1102,7 +1102,7 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     // any conflict can be remapped by the user via Settings > Shortcut Mapper > Plugins.
     g_skScrub      = { true, true, false, 'H' };            // Ctrl+Alt+H  — scrub PHI
     g_skTree       = { true, true, false, 'T' };            // Ctrl+Alt+T  — toggle tree
-    g_skFold       = { true, true, false, 'F' };            // Ctrl+Alt+F  — toggle folding
+    g_skFold       = { true, true, false, 'G' };            // Ctrl+Alt+G  — toggle folding (F is NPP "Collapse level")
     g_skNextField  = { true, true, false, VK_RIGHT };      // Ctrl+Alt+Right — next field
     g_skPrevField  = { true, true, false, VK_LEFT };       // Ctrl+Alt+Left  — prev field
     g_skCheck      = { true, true, false, 'C' };            // Ctrl+Alt+C  — check conformance
@@ -1110,7 +1110,7 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skEnable     = { true, true, false, 'E' };            // Ctrl+Alt+E  — force-enable HL7 mode
     g_skValidate   = { true, true, false, 'V' };            // Ctrl+Alt+V  — validate / malform check
     g_skCompare    = { true, true, false, 'D' };            // Ctrl+Alt+D  — diff vs clipboard
-    g_skSettings   = { true, true, false, 'S' };            // Ctrl+Alt+S  — settings
+    g_skSettings   = { true, true, false, 'P' };            // Ctrl+Alt+P  — settings (S is NPP "Save As")
     g_skMllpSend   = { true, true, false, 'M' };            // Ctrl+Alt+M  — MLLP send message
     g_skMllpListen = { true, true, false, 'L' };            // Ctrl+Alt+L  — MLLP listener toggle
 

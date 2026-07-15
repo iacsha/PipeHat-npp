@@ -62,7 +62,7 @@ half; *conformance profiles* (v1.1) are the configurable half.
 
 | Item | What | Status |
 |------|------|--------|
-| Settings GUI | `SettingsDialog.{h,cpp}` — modal editor for conformance rules (Plugins > PipeHat > Settings, Ctrl+Alt+S). ListView grid `segment / field / max / allowed values / required`; Add/Edit/Remove + a single-rule editor sub-dialog; reads and writes `PipeHat.profile` and reloads the profile on save so Check Conformance updates without a restart | ✅ |
+| Settings GUI | `SettingsDialog.{h,cpp}` — modal editor for conformance rules (Plugins > PipeHat > Settings, Ctrl+Alt+P). ListView grid `segment / field / max / allowed values / required`; Add/Edit/Remove + a single-rule editor sub-dialog; reads and writes `PipeHat.profile` and reloads the profile on save so Check Conformance updates without a restart | ✅ |
 
 **Note:** The GUI is the source of truth on save — rule lines are regenerated from
 the grid (the documented header comment block is preserved). The file format is unchanged,
@@ -175,7 +175,7 @@ Protocol (MLLP) framing (`<VT>` 0x0B … message … `<FS>` 0x1C `<CR>` 0x0D):
 
 ### P2 — workflow polish
 
-- **Conformance rules GUI** ✅ *shipped v1.3.0* — modal editor (`SettingsDialog`, Ctrl+Alt+S)
+- **Conformance rules GUI** ✅ *shipped v1.3.0* — modal editor (`SettingsDialog`, Ctrl+Alt+P)
   listing rules as `segment | field | max | allowed-values | required` with add/edit/remove and
   input validation, saving back to `PipeHat.profile`. Still open as niceties: `SegmentDB`-backed
   segment/field dropdowns, "add rule from current field" (right-click a field → seed a rule),

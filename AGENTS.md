@@ -86,7 +86,7 @@ Three isolated layers: `MllpProtocol.h` (pure framing + ACK, header-only, standa
 
 ## Dialogs / settings GUI (v1.3, NOT header-only)
 
-`SettingsDialog.{h,cpp}` is a modal conformance-rule editor (`Settings`, Ctrl+Alt+S). Unlike the
+`SettingsDialog.{h,cpp}` is a modal conformance-rule editor (`Settings`, Ctrl+Alt+P). Unlike the
 feature modules it is **not** header-only — it needs `.rc` dialog templates, so it is listed in
 `CMakeLists.txt` and `resource.rc`.
 

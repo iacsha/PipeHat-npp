@@ -47,8 +47,8 @@ The plugin activates automatically on HL7 **content** (first non-blank segment i
 | `Ctrl+Alt+T` | Toggle message tree | `Ctrl+Alt+V` | Validate message |
 | `Ctrl+Alt+H` | Scrub PHI | `Ctrl+Alt+D` | Compare with clipboard |
 | `Ctrl+Alt+C` | Check conformance | `Ctrl+Alt+R` | Pretty-print / reformat |
-| `Ctrl+Alt+F` | Toggle folding | `Ctrl+Alt+E` | Enable HL7 highlighting |
-| `Ctrl+Alt+←` / `→` | Previous / next field | `Ctrl+Alt+S` | Settings |
+| `Ctrl+Alt+G` | Toggle folding | `Ctrl+Alt+E` | Enable HL7 highlighting |
+| `Ctrl+Alt+←` / `→` | Previous / next field | `Ctrl+Alt+P` | Settings |
 | `Ctrl+Alt+M` | Send message (MLLP) | `Ctrl+Alt+L` | Toggle MLLP listener |
 
 Any conflicts can be remapped in *Settings → Shortcut Mapper → Plugin commands*.
@@ -134,7 +134,7 @@ MSH-9.required=true        # field must be present
 
 Violating fields are squiggle-underlined in the editor and listed in a summary dialog.
 
-You don't have to hand-edit the file: **Settings** (`Ctrl+Alt+S`) opens a rule editor —
+You don't have to hand-edit the file: **Settings** (`Ctrl+Alt+P`) opens a rule editor —
 a `segment / field / max / allowed values / required` grid with Add / Edit / Remove — that
 reads and writes `PipeHat.profile` and reloads it immediately so the next Check Conformance
 uses your changes. The file format is unchanged, so hand-editing and the GUI interoperate.

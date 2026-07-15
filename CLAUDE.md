@@ -63,7 +63,7 @@ malform checks), and **`MessageDiff.h`** (segment/field-aware clipboard diff). T
 field navigation, folding) live in `main.cpp` and are exposed via `getFuncsArray` with
 `Ctrl+Alt+` hotkeys. Conformance squiggles use Scintilla indicator 18, validation 19.
 
-The v1.3 **settings GUI** (`SettingsDialog.{h,cpp}`, `cmdSettings`, Ctrl+Alt+S) is the one
+The v1.3 **settings GUI** (`SettingsDialog.{h,cpp}`, `cmdSettings`, Ctrl+Alt+P) is the one
 recent feature that is **not** header-only — it needs `.rc` dialog templates, so it is listed
 in `CMakeLists.txt`. Dialog resource IDs live in `src/resource.h` (shared by `resource.rc` and
 the dialog code): the dockable tree panel keeps dialog ID **1** (empty template, controls built
