@@ -39,6 +39,7 @@
 #define WM_MLLP_RECEIVED   (WM_APP + 1)  // lParam = new std::string* (inbound bytes)
 #define WM_MLLP_ACK_RESULT (WM_APP + 2)  // lParam = new mllpnet::SendResult*
 #define WM_UPDATE_RESULT   (WM_APP + 3)  // lParam = new updatecheck::Result*
+#define WM_PIPEHAT_RESTYLE (WM_APP + 4)  // deferred re-style after buffer activation settles
 
 // ── Global state ──
 static NppData g_nppData;
@@ -693,6 +694,15 @@ static bool isNewerVersion(const std::wstring& latest, const std::wstring& cur) 
 // touch Notepad++.
 static LRESULT CALLBACK mllpWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
+        case WM_PIPEHAT_RESTYLE: {
+            // Runs after Notepad++ has finished activating a buffer (posted from
+            // NPPN_BUFFERACTIVATED), so our container lexer + styling is applied
+            // LAST and isn't overwritten by NPP re-applying the buffer's language.
+            ScintillaView& view = getCurrentView();
+            checkAndEnableHL7(view);
+            updateTreeVisibility(view);
+            return 0;
+        }
         case WM_MLLP_RECEIVED: {
             std::string* payload = (std::string*)l;
             if (payload) {
@@ -1881,6 +1891,10 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
             // user wants it) and hide it when switching to / closing into a non-HL7
             // buffer.
             updateTreeVisibility(view);
+            // Re-assert styling AFTER activation settles — NPP re-applies the
+            // buffer's language lexer around this notification and would otherwise
+            // win the race, leaving switched-to HL7 tabs plain.
+            if (g_hMllpWnd) PostMessageW(g_hMllpWnd, WM_PIPEHAT_RESTYLE, 0, 0);
             break;
         }
 
