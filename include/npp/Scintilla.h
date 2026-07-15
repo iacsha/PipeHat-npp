@@ -120,6 +120,8 @@ typedef sptr_t (*SciFnDirect)(sptr_t ptr, unsigned int iMessage, uptr_t wParam, 
 #define SCN_DWELLSTART 2016
 #define SCN_DWELLEND 2017
 #define SCN_UPDATEUI 2007
+#define SC_UPDATE_CONTENT 0x1
+#define SC_UPDATE_SELECTION 0x2
 #define SCN_CHARADDED 2001
 #define SCN_MARGINCLICK 2010
 

@@ -31,6 +31,7 @@
 #define PIPEHAT_INDIC_CONFORMANCE 18
 #define PIPEHAT_INDIC_VALIDATION  19
 #define PIPEHAT_INDIC_DIFF        20  // Compare Views field-difference highlight
+#define PIPEHAT_INDIC_CURFIELD    21  // current-field-under-caret highlight
 
 // Custom messages posted from MLLP worker/listener threads to the hidden
 // UI-thread window (buffer creation and dialogs must run on the UI thread).
@@ -1199,9 +1200,11 @@ static CaretField analyzeCaretField(SciFnDirect fn, sptr_t ptr, int caretPos) {
     }
 
     if (curField == 0) {   // caret in the segment id itself
+        int endBytes = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), fEndW, nullptr, 0, nullptr, nullptr);
+        if (endBytes < 0) endBytes = 0;
         r.ok = true; r.path = segId;
         r.fieldStartByte = lineStart;
-        r.fieldEndByte = lineStart + (int)u8.size();
+        r.fieldEndByte = lineStart + endBytes;
         return r;
     }
 
@@ -1284,6 +1287,31 @@ static void cmdCopyFieldPath() {
 
     std::string tip = wToUtf8(L"Copied: " + cf.path);
     view.fnDirect(view.ptrDirect, SCI_CALLTIPSHOW, pos, (sptr_t)tip.c_str());
+}
+
+// Subtly box the field the caret is in, updated as the caret moves. Reuses the
+// caret→field analysis; the highlight lives on its own indicator so it coexists
+// with conformance/validation squiggles and the compare-diff highlight.
+static void highlightCurrentField(ScintillaView& view) {
+    SciFnDirect fn = view.fnDirect;
+    sptr_t ptr = view.ptrDirect;
+    if (!fn) return;
+
+    fn(ptr, SCI_SETINDICATORCURRENT, PIPEHAT_INDIC_CURFIELD, 0);
+    fn(ptr, SCI_INDICSETSTYLE, PIPEHAT_INDIC_CURFIELD, INDIC_STRAIGHTBOX);
+    fn(ptr, SCI_INDICSETFORE, PIPEHAT_INDIC_CURFIELD, 0xC08040);  // soft blue (BGR)
+    fn(ptr, SCI_INDICSETALPHA, PIPEHAT_INDIC_CURFIELD, 40);
+    fn(ptr, SCI_INDICSETOUTLINEALPHA, PIPEHAT_INDIC_CURFIELD, 90);
+
+    int docLen = (int)fn(ptr, SCI_GETLENGTH, 0, 0);
+    fn(ptr, SCI_INDICATORCLEARRANGE, 0, docLen);
+
+    int pos = (int)fn(ptr, SCI_GETCURRENTPOS, 0, 0);
+    CaretField cf = analyzeCaretField(fn, ptr, pos);
+    if (cf.ok && cf.fieldEndByte > cf.fieldStartByte) {
+        fn(ptr, SCI_SETINDICATORCURRENT, PIPEHAT_INDIC_CURFIELD, 0);
+        fn(ptr, SCI_INDICATORFILLRANGE, cf.fieldStartByte, cf.fieldEndByte - cf.fieldStartByte);
+    }
 }
 
 // ── Menu commands ──
@@ -1618,6 +1646,17 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
                     checkAndEnableHL7(*view);
                 }
             }
+            break;
+        }
+
+        case SCN_UPDATEUI: {
+            // Refresh the current-field highlight only on caret/selection changes
+            // (not scroll), for the view whose selection moved.
+            if ((notifyCode->updated & SC_UPDATE_SELECTION) == 0) break;
+            ScintillaView* view = nullptr;
+            if (notifyCode->nmhdr.hwndFrom == g_viewMain.hWnd) view = &g_viewMain;
+            else if (notifyCode->nmhdr.hwndFrom == g_viewSub.hWnd) view = &g_viewSub;
+            if (view && view->isHL7) highlightCurrentField(*view);
             break;
         }
 
