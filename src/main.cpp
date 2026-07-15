@@ -69,6 +69,40 @@ static int               g_mllpListenerItemIdx = -1;   // g_funcItems index of t
 static void saveMllpConfig();
 static void updateListenerCheck();
 
+// ── Event log (PHI-aware) ──
+// Append a timestamped line to PipeHat.log in the config dir. Log ONLY metadata
+// (counts, control ids, host:port, result codes) — never field values or message
+// bodies — so the log never becomes a PHI store.
+static void logEvent(const std::wstring& category, const std::wstring& msg) {
+    wchar_t cfg[MAX_PATH]; cfg[0] = 0;
+    SendMessage(g_nppData._nppHandle, NPPM_GETPLUGINSCONFIGDIR, MAX_PATH, (LPARAM)cfg);
+    if (!cfg[0]) return;
+    std::wstring path = std::wstring(cfg) + L"\\PipeHat.log";
+
+    SYSTEMTIME st; GetLocalTime(&st);
+    wchar_t ts[32];
+    swprintf_s(ts, L"%04d-%02d-%02d %02d:%02d:%02d",
+               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    std::wstring line = std::wstring(ts) + L" [" + category + L"] " + msg + L"\r\n";
+
+    int n = WideCharToMultiByte(CP_UTF8, 0, line.c_str(), (int)line.size(), nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return;
+    std::string bytes(n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, line.c_str(), (int)line.size(), &bytes[0], n, nullptr, nullptr);
+    std::ofstream out(path.c_str(), std::ios::binary | std::ios::app);
+    if (out) out.write(bytes.data(), (std::streamsize)bytes.size());
+}
+
+static void cmdOpenEventLog() {
+    wchar_t cfg[MAX_PATH]; cfg[0] = 0;
+    SendMessage(g_nppData._nppHandle, NPPM_GETPLUGINSCONFIGDIR, MAX_PATH, (LPARAM)cfg);
+    if (!cfg[0]) return;
+    std::wstring path = std::wstring(cfg) + L"\\PipeHat.log";
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES)
+        logEvent(L"LOG", L"Event log created");
+    SendMessage(g_nppData._nppHandle, NPPM_DOOPEN, 0, (LPARAM)path.c_str());
+}
+
 // Tracks whether the user wants the tree panel shown. The panel only actually
 // appears when this is true AND the active buffer is HL7 — so it never auto-loads
 // on startup and closes itself when the HL7 message is closed.
@@ -76,7 +110,7 @@ static bool g_treeIntent = false;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[16];
+static FuncItem g_funcItems[17];
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -441,6 +475,11 @@ static void cmdScrubPHI() {
     // The coverage check is the anonymize-mode substitute for the residual scan.
     int residual = anonymize ? 0 : scanResidualPII(fn, ptr);
 
+    logEvent(L"SCRUB", L"mode=" + std::wstring(anonymize ? L"anonymize" : L"remove") +
+             L" scrubbed=" + std::to_wstring(count) + L" skipped=" + std::to_wstring(skipped) +
+             L" residual=" + std::to_wstring(residual) +
+             L" coverageMisses=" + std::to_wstring(coverageMisses));
+
     if (skipped == 0 && residual == 0 && coverageMisses == 0) {
         wchar_t msg[256];
         swprintf_s(msg,
@@ -626,6 +665,24 @@ static LRESULT CALLBACK mllpWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 view.isHL7 = false;
                 checkAndEnableHL7(view);
                 updateTreeVisibility(view);
+
+                // Log metadata only (type, control id, segment count) — no body.
+                auto segs = mllp::segments(*payload);
+                std::wstring type = L"?", ctrl = L"?";
+                for (auto& s : segs) {
+                    if (s.size() >= 3 && s.compare(0, 3, "MSH") == 0) {
+                        char fs = s.size() >= 4 ? s[3] : '|';
+                        auto f = mllp::splitCh(s, fs);
+                        auto nrw = [](const std::string& a) {
+                            return std::wstring(a.begin(), a.end());
+                        };
+                        if (f.size() > 8) type = nrw(f[8]);   // MSH-9
+                        if (f.size() > 9) ctrl = nrw(f[9]);   // MSH-10
+                        break;
+                    }
+                }
+                logEvent(L"MLLP", L"Inbound type=" + type + L" control=" + ctrl +
+                         L" segments=" + std::to_wstring((int)segs.size()) + L", ACK AA");
                 delete payload;
             }
             return 0;
@@ -649,6 +706,10 @@ static LRESULT CALLBACK mllpWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     icon = pos ? MB_ICONINFORMATION : MB_ICONWARNING;
                 }
                 MessageBoxW(g_nppData._nppHandle, msg.c_str(), L"PipeHat MLLP \x2014 Send", MB_OK | icon);
+                std::wstring res = !r->connected ? L"connect failed"
+                                 : !r->gotAck    ? L"no ACK"
+                                 : (L"ACK " + utf8ToW(mllp::parseAck(r->ack).code));
+                logEvent(L"MLLP", L"Send result: " + res);
                 delete r;
             }
             return 0;
@@ -708,6 +769,7 @@ static void cmdMllpSend() {
 
     std::string host = wToUtf8(g_mllp.host);
     unsigned short port = (unsigned short)g_mllp.sendPort;
+    logEvent(L"MLLP", L"Send initiated to " + g_mllp.host + L":" + std::to_wstring(g_mllp.sendPort));
     HWND target = g_hMllpWnd;
     std::thread([host, port, norm, target]() {
         mllpnet::SendResult r = mllpnet::sendSync(host, port, norm, 10000);
@@ -721,6 +783,7 @@ static void cmdMllpToggleListener() {
     if (g_listener.running()) {
         g_listener.stop();
         updateListenerCheck();
+        logEvent(L"MLLP", L"Listener stopped");
         MessageBoxW(g_nppData._nppHandle, L"MLLP listener stopped.",
                     L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION);
         return;
@@ -755,6 +818,7 @@ static void cmdMllpToggleListener() {
 
     if (g_listener.start(bind, port, handler, err)) {
         updateListenerCheck();
+        logEvent(L"MLLP", L"Listener started on " + bindW + L":" + std::to_wstring((int)g_listener.port()));
         std::wstring m = L"MLLP listener started on " + bindW + L":" +
                          std::to_wstring((int)g_listener.port()) +
                          L".\r\n\r\nInbound messages open in new tabs and are auto-ACKed (AA).";
@@ -855,6 +919,9 @@ static void cmdCheckConformance() {
             k++;
         }
     }
+
+    logEvent(L"CONFORMANCE", L"rules=" + std::to_wstring((int)g_profile.ruleCount()) +
+             L" violations=" + std::to_wstring(violations));
 
     if (violations == 0) {
         wchar_t msg[128];
@@ -968,6 +1035,8 @@ static void cmdValidate() {
         if (++shown <= 25)
             report += L"Line " + std::to_wstring(fnd.line + 1) + L": " + fnd.message + L"\r\n";
     }
+
+    logEvent(L"VALIDATE", L"findings=" + std::to_wstring((int)findings.size()));
 
     if (findings.empty()) {
         MessageBoxW(g_nppData._nppHandle,
@@ -1652,6 +1721,12 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_funcItems[g_nbFuncItems]._pShKey = &g_skCopyRtf;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Open Event Log");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdOpenEventLog;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
     g_nbFuncItems++;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"About PipeHat");
