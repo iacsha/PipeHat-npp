@@ -48,7 +48,8 @@ The plugin activates automatically on HL7 **content** (first non-blank segment i
 | `Ctrl+Alt+H` | Scrub PHI | `Ctrl+Alt+D` | Compare with clipboard |
 | `Ctrl+Alt+C` | Check conformance | `Ctrl+Alt+R` | Pretty-print / reformat |
 | `Ctrl+Alt+F` | Toggle folding | `Ctrl+Alt+E` | Enable HL7 highlighting |
-| `Ctrl+Alt+←` / `→` | Previous / next field | `Ctrl+Alt+S` | Settings (conformance rules) |
+| `Ctrl+Alt+←` / `→` | Previous / next field | `Ctrl+Alt+S` | Settings |
+| `Ctrl+Alt+M` | Send message (MLLP) | `Ctrl+Alt+L` | Toggle MLLP listener |
 
 Any conflicts can be remapped in *Settings → Shortcut Mapper → Plugin commands*.
 
@@ -138,6 +139,25 @@ a `segment / field / max / allowed values / required` grid with Add / Edit / Rem
 reads and writes `PipeHat.profile` and reloads it immediately so the next Check Conformance
 uses your changes. The file format is unchanged, so hand-editing and the GUI interoperate.
 
+### MLLP send / receive (network) — off by default
+
+> ⚠️ **MLLP is cleartext.** Messages cross the network **unencrypted** — PHI included.
+> Use it only over loopback or a trusted network. There is no TLS (MLLP/S) yet.
+
+PipeHat can send the active message to an HL7 endpoint and receive inbound messages over
+MLLP (HL7's framing for TCP). It ships **disabled** and opens no sockets until you turn it on
+in **Settings → MLLP**.
+
+- **Send Message (MLLP)** (`Ctrl+Alt+M`) — frames the active message, sends it to the configured
+  host/port on a background thread, and shows the returned ACK/NAK (`MSA-1` + control id).
+- **Toggle MLLP Listener** (`Ctrl+Alt+L`) — starts/stops an MLLP server. Inbound messages open
+  in new tabs and are auto-acknowledged (`AA`). The menu item shows a checkmark while listening.
+
+The listener **binds to loopback (`127.0.0.1`) only** unless you both tick *Allow binding a
+non-loopback interface* and supply a bind address — and even then a confirmation warns you that
+you're exposing an HL7 receiver on your network. The first send or listen each session prompts
+a cleartext-PHI confirmation. Network settings persist to `PipeHat.ini`.
+
 ---
 
 ## Documentation
@@ -163,7 +183,9 @@ and build-verified. v1.1 added trigger-event decoding, HIPAA Safe Harbor scrubbe
 conformance checking, hotkeys, and smarter panel behavior; v1.2 adds structural validation,
 message compare/diff, escape + HL7-version decoding, pretty-print, folding, and broader
 activation; v1.3 adds the **Settings GUI** for editing conformance rules without hand-editing
-the profile file. Each feature is verified by a standalone test. See the roadmap for what's next.
+the profile file. Each feature is verified by a standalone test. **MLLP send/receive** (network)
+is integrated behind an off-by-default toggle and pending live-endpoint verification before a
+v2.0 release. See the roadmap for what's next.
 
 ---
 

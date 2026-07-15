@@ -70,8 +70,33 @@ the dialog code): the dockable tree panel keeps dialog ID **1** (empty template,
 in code); `IDD_SETTINGS = 2` and `IDD_RULE = 3` are the modal conformance-rule editor and its
 single-rule sub-dialog. The editor reads/writes the same `PipeHat.profile` `loadProfile()`
 parses — on save it regenerates the rule lines from the grid (preserving the documented header)
-and `cmdSettings` reloads the profile so Check Conformance updates without a restart. There are
-12 menu items as of v1.3.0.
+and `cmdSettings` reloads the profile so Check Conformance updates without a restart. The
+Settings dialog also hosts the MLLP network section (in/out via an `MllpConfig&`).
+
+### MLLP over TCP (v2.0, unreleased — the plugin's only network feature)
+
+Three layers, each isolated:
+
+- **`MllpProtocol.h`** (header-only, pure — no sockets/UI) — MLLP framing (`<VT>…<FS><CR>`),
+  an incremental `StreamParser` (TCP is a stream: handles split *and* coalesced frames), and
+  `buildAck`/`parseAck`. When an MSH is split on its field separator, `token[k]` = MSH-(k+1)
+  (same off-by-one as everywhere else). Standalone-tested.
+- **`MllpTransport.{h,cpp}`** — owns Winsock (`ws2_32`, added to `CMakeLists.txt`). `sendSync`
+  (non-blocking connect + timeout so a hung host can't freeze NPP) and `Listener` (background
+  accept thread, services one connection at a time, ACKs each message, `stop()` joins the
+  thread + `WSACleanup`). UI-agnostic via a handler callback; loopback-tested end to end.
+- **`main.cpp` glue** — a hidden `HWND_MESSAGE` window (`mllpWndProc`, created at NPPN_READY)
+  is the **only** place inbound buffers and ACK dialogs are touched: worker/listener threads
+  `PostMessage` (`WM_MLLP_RECEIVED` / `WM_MLLP_ACK_RESULT`) and the UI thread does the NPP work.
+  Config persists to `PipeHat.ini` (`loadMllpConfig`/`saveMllpConfig`). Menu: **Send Message
+  (MLLP)** Ctrl+Alt+M, **Toggle MLLP Listener** Ctrl+Alt+L (checkmark via
+  `NPPM_SETMENUITEMCHECK`). **14 menu items** total.
+
+**MLLP invariants — do not regress:** networking is OFF by default; binds are loopback-only
+unless the user opts in *and* provides an address (`MllpConfig::effectiveBindAddr` fails safe);
+a cleartext-PHI confirmation gates first use each session; the listener is stopped and the
+window destroyed at **`NPPN_SHUTDOWN`, never in `DllMain`** (joining a thread under loader lock
+deadlocks). Default startup opens no sockets.
 
 Data flow: `beNotified` (buffer activated / modified / dwell) → `HL7Lexer.tokenize` →
 either `ScintillaStyler` (colors + tooltips) or `MessageTreeView.refresh` (tree). The

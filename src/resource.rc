@@ -10,25 +10,42 @@ EXSTYLE 0
 BEGIN
 END
 
-// Dialog 2 (IDD_SETTINGS) — PipeHat settings. Today the only user-customizable
-// state is the conformance rule set (PipeHat.profile); this is its editor.
-IDD_SETTINGS DIALOGEX 0, 0, 344, 232
+// Dialog 2 (IDD_SETTINGS) — PipeHat settings: conformance rules plus the MLLP
+// network section. Conformance rules persist to PipeHat.profile; MLLP settings
+// to PipeHat.ini.
+IDD_SETTINGS DIALOGEX 0, 0, 344, 322
 STYLE DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "PipeHat Settings \x2014 Conformance Rules"
+CAPTION "PipeHat Settings"
 FONT 8, "MS Shell Dlg"
 BEGIN
-    LTEXT           "Rules that Check Conformance applies to the active message. One row per segment-field; edit for the interface you are validating.",
-                    -1, 7, 6, 330, 18
+    LTEXT           "Conformance rules that Check Conformance applies to the active message. One row per segment-field.",
+                    -1, 7, 6, 330, 16
     CONTROL         "", IDC_RULE_LIST, "SysListView32",
                     LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP,
-                    7, 28, 330, 158
-    PUSHBUTTON      "&Add\x2026", IDC_RULE_ADD, 7, 192, 52, 14
-    PUSHBUTTON      "&Edit\x2026", IDC_RULE_EDIT, 63, 192, 52, 14
-    PUSHBUTTON      "&Remove", IDC_RULE_REMOVE, 119, 192, 52, 14
-    DEFPUSHBUTTON   "&Save", IDOK, 229, 192, 52, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 285, 192, 52, 14
-    LTEXT           "Saved to PipeHat.profile in the Notepad++ plugin config folder.",
-                    -1, 7, 214, 330, 10
+                    7, 24, 330, 120
+    PUSHBUTTON      "&Add\x2026", IDC_RULE_ADD, 7, 148, 52, 14
+    PUSHBUTTON      "&Edit\x2026", IDC_RULE_EDIT, 63, 148, 52, 14
+    PUSHBUTTON      "&Remove", IDC_RULE_REMOVE, 119, 148, 52, 14
+
+    GROUPBOX        "MLLP (network) \x2014 HL7 over TCP", -1, 7, 170, 330, 118
+    AUTOCHECKBOX    "Enable MLLP networking (off by default)", IDC_MLLP_ENABLE, 14, 184, 200, 10
+    LTEXT           "Send to \x2014 Host:", -1, 14, 202, 54, 10
+    EDITTEXT        IDC_MLLP_HOST, 70, 200, 120, 12, ES_AUTOHSCROLL
+    LTEXT           "Port:", -1, 200, 202, 20, 10
+    EDITTEXT        IDC_MLLP_SENDPORT, 222, 200, 40, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "Listener port:", -1, 14, 220, 54, 10
+    EDITTEXT        IDC_MLLP_LISTENPORT, 70, 218, 40, 12, ES_NUMBER | ES_AUTOHSCROLL
+    AUTOCHECKBOX    "Allow binding a non-loopback interface (exposes a receiver on your network)",
+                    IDC_MLLP_ALLOWNONLOOP, 14, 236, 320, 10
+    LTEXT           "Bind address:", -1, 14, 252, 54, 10
+    EDITTEXT        IDC_MLLP_BINDADDR, 70, 250, 120, 12, ES_AUTOHSCROLL
+    LTEXT           "Warning: MLLP is cleartext \x2014 PHI crosses the network unencrypted. Keep to loopback / trusted networks.",
+                    -1, 14, 270, 320, 14
+
+    DEFPUSHBUTTON   "&Save", IDOK, 229, 300, 52, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 285, 300, 52, 14
+    LTEXT           "Rules \x2192 PipeHat.profile, network \x2192 PipeHat.ini (plugin config folder).",
+                    -1, 7, 304, 210, 10
 END
 
 // Dialog 3 (IDD_RULE) — add or edit a single conformance rule.

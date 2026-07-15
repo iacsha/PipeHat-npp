@@ -61,7 +61,28 @@ diff). Prefer this pattern for the next feature.
 - Scintilla indicator slots: **18** = conformance squiggles, **19** = validation squiggles
   (0–7 are reserved for lexers). Pick 20+ for new indicators.
 - Menu commands live in `getFuncsArray` with static `ShortcutKey` objects (Ctrl+Alt+ combos);
-  bump `g_funcItems[N]` when adding one. There are **12** items as of v1.3.0.
+  bump `g_funcItems[N]` when adding one. There are **14** items (v1.3.0 + MLLP).
+
+## MLLP networking (v2.0, unreleased) — the only network feature
+
+Three isolated layers: `MllpProtocol.h` (pure framing + ACK, header-only, standalone-tested),
+`MllpTransport.{h,cpp}` (Winsock sender + threaded listener, needs `ws2_32` — in CMake, and a
+`#pragma comment(lib,...)`; loopback-tested), and `main.cpp` glue.
+
+**Non-negotiable MLLP invariants (these are the security posture — do not regress):**
+
+1. **OFF by default.** `MllpConfig::enabled` defaults false; `loadMllpConfig` keeps that when
+   `PipeHat.ini` is absent. Default startup opens **no sockets**.
+2. **Loopback unless explicitly opted in.** Never bind a non-loopback address without
+   `allowNonLoopback` AND a user-supplied `bindAddr`. Use `effectiveBindAddr()` — it fails safe
+   to `127.0.0.1`. A non-loopback bind requires an extra confirmation dialog.
+3. **Cleartext-PHI confirmation** (`confirmCleartextOnce`) gates the first send/listen each
+   session. PHI crosses the wire unencrypted (no TLS yet).
+4. **UI work only on the UI thread.** Worker/listener threads never touch Notepad++/Scintilla
+   directly — they `PostMessage` to the hidden `HWND_MESSAGE` window (`g_hMllpWnd`,
+   `mllpWndProc`); buffer creation and dialogs happen there.
+5. **Teardown at `NPPN_SHUTDOWN`, never in `DllMain`.** `Listener::stop()` joins its thread;
+   doing that under the DLL loader lock deadlocks.
 
 ## Dialogs / settings GUI (v1.3, NOT header-only)
 

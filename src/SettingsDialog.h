@@ -1,11 +1,12 @@
 #pragma once
 #include <windows.h>
 #include <string>
+#include "MllpConfig.h"
 
-// Modal settings GUI for PipeHat. Today the only user-customizable state is the
-// conformance rule set stored in PipeHat.profile; this dialog is its editor so
-// users don't have to hand-edit the file. Returns true if the user saved changes
-// (the caller should then reload the profile so Check Conformance picks them up).
+// Modal settings GUI for PipeHat: the conformance rule set (PipeHat.profile) and
+// the MLLP network settings (in/out via cfg). Returns true if the user saved —
+// the caller should then reload the profile and persist/apply cfg.
 namespace SettingsDialog {
-    bool runModal(HINSTANCE hInst, HWND hParent, const std::wstring& profilePath);
+    bool runModal(HINSTANCE hInst, HWND hParent, const std::wstring& profilePath,
+                  MllpConfig& cfg);
 }

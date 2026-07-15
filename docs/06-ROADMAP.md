@@ -70,6 +70,30 @@ so hand-editing still works and round-trips through the dialog.
 
 ---
 
+## In progress — MLLP send / receive over TCP (v2.0, unreleased)
+
+The plugin's first network feature. Built and integrated behind an off-by-default
+toggle; needs live in-Notepad++ verification before release.
+
+| Layer | What | Status |
+|-------|------|--------|
+| Protocol | `MllpProtocol.h` (header-only, pure) — MLLP framing, incremental stream de-framer, `buildAck`/`parseAck` | ✅ 20/20 standalone test |
+| Transport | `MllpTransport.{h,cpp}` — Winsock sender (non-blocking connect + timeout) and background-thread listener (accept loop, per-connection service, clean stop); UI-agnostic | ✅ 12/12 loopback test |
+| Integration | `main.cpp` — hidden message-only window marshals inbound → new buffer (UI thread) and ACK results → dialog; menu items **Send Message (MLLP)** (Ctrl+Alt+M) and **Toggle MLLP Listener** (Ctrl+Alt+L); config in `PipeHat.ini` | ⏳ built; manual NPP test pending |
+
+**Security model (implemented):** OFF by default; loopback-only bind unless the
+user opts in *and* supplies a bind address (`MllpConfig::effectiveBindAddr` fails
+safe); one-time-per-session cleartext-PHI confirmation; extra confirmation on any
+non-loopback bind; listener stopped + marshaling window destroyed at
+`NPPN_SHUTDOWN` (never in `DllMain` — loader lock). Default startup opens **no
+sockets**.
+
+**Still to do:** live send/receive test against a real MLLP endpoint (e.g. a Mirth
+listener); enhanced-mode ACK (MSH-15/16) is not honored (always application ACK);
+one connection serviced at a time; no TLS (MLLP/S) — flagged as cleartext.
+
+---
+
 ## Upcoming fixes (remaining review items)
 
 | ID | Item | Priority | Notes |

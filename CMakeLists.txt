@@ -16,6 +16,7 @@ add_library(PipeHat SHARED
     src/MessageTreeView.cpp
     src/PHIScrubber.cpp
     src/SettingsDialog.cpp
+    src/MllpTransport.cpp
     src/resource.rc
 )
 
@@ -25,7 +26,7 @@ target_include_directories(PipeHat PRIVATE
 )
 
 target_link_libraries(PipeHat PRIVATE
-    user32 gdi32 comctl32 comdlg32
+    user32 gdi32 comctl32 comdlg32 ws2_32
 )
 
 set_target_properties(PipeHat PROPERTIES

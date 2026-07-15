@@ -19,10 +19,19 @@
 #include "Validator.h"
 #include "MessageDiff.h"
 #include "SettingsDialog.h"
+#include "MllpConfig.h"
+#include "MllpProtocol.h"
+#include "MllpTransport.h"
+#include <thread>
 
 // Scintilla indicator slots for squiggles (0-7 are reserved for lexers).
 #define PIPEHAT_INDIC_CONFORMANCE 18
 #define PIPEHAT_INDIC_VALIDATION  19
+
+// Custom messages posted from MLLP worker/listener threads to the hidden
+// UI-thread window (buffer creation and dialogs must run on the UI thread).
+#define WM_MLLP_RECEIVED   (WM_APP + 1)  // lParam = new std::string* (inbound bytes)
+#define WM_MLLP_ACK_RESULT (WM_APP + 2)  // lParam = new mllpnet::SendResult*
 
 // ── Global state ──
 static NppData g_nppData;
@@ -44,6 +53,17 @@ static MessageTreeView g_treeView;
 static PHIScrubber g_phiScrubber;
 static ConformanceProfile g_profile;
 
+// ── MLLP networking (off by default; see MllpConfig) ──
+static MllpConfig        g_mllp;
+static mllpnet::Listener g_listener;
+static HWND              g_hMllpWnd = nullptr;      // hidden UI-thread marshaling window
+static bool              g_mllpCleartextAcked = false; // PHI cleartext warning shown this session
+static int               g_mllpListenerItemIdx = -1;   // g_funcItems index of the listener toggle
+
+// Forward declarations for MLLP helpers used before their definitions.
+static void saveMllpConfig();
+static void updateListenerCheck();
+
 // Tracks whether the user wants the tree panel shown. The panel only actually
 // appears when this is true AND the active buffer is HL7 — so it never auto-loads
 // on startup and closes itself when the HL7 message is closed.
@@ -51,7 +71,7 @@ static bool g_treeIntent = false;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[12];
+static FuncItem g_funcItems[14];
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -64,6 +84,8 @@ static ShortcutKey g_skEnable;
 static ShortcutKey g_skValidate;
 static ShortcutKey g_skCompare;
 static ShortcutKey g_skSettings;
+static ShortcutKey g_skMllpSend;
+static ShortcutKey g_skMllpListen;
 
 // ── Helpers ──
 static HWND getCurrentScintilla() {
@@ -458,8 +480,237 @@ static void cmdSettings() {
         if (out) out.write(bytes.data(), (std::streamsize)bytes.size());
     }
 
-    if (SettingsDialog::runModal((HINSTANCE)g_hModule, g_nppData._nppHandle, path)) {
+    if (SettingsDialog::runModal((HINSTANCE)g_hModule, g_nppData._nppHandle, path, g_mllp)) {
         loadProfile();
+        saveMllpConfig();
+        // If networking was switched off while the listener is up, stop it now.
+        if (!g_mllp.enabled && g_listener.running()) {
+            g_listener.stop();
+            updateListenerCheck();
+        }
+    }
+}
+
+// ── MLLP networking ──
+
+static std::wstring mllpIniPath() {
+    wchar_t cfgDir[MAX_PATH]; cfgDir[0] = 0;
+    SendMessage(g_nppData._nppHandle, NPPM_GETPLUGINSCONFIGDIR, MAX_PATH, (LPARAM)cfgDir);
+    if (cfgDir[0] == 0) return std::wstring();
+    return std::wstring(cfgDir) + L"\\PipeHat.ini";
+}
+
+// Load MLLP settings from PipeHat.ini. Missing file keeps the safe defaults
+// (disabled, loopback) from MllpConfig.
+static void loadMllpConfig() {
+    std::wstring ini = mllpIniPath();
+    if (ini.empty() || GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+    wchar_t buf[256];
+    g_mllp.enabled = GetPrivateProfileIntW(L"MLLP", L"Enabled", 0, ini.c_str()) != 0;
+    GetPrivateProfileStringW(L"MLLP", L"Host", L"127.0.0.1", buf, 256, ini.c_str()); g_mllp.host = buf;
+    g_mllp.sendPort   = GetPrivateProfileIntW(L"MLLP", L"SendPort", 2575, ini.c_str());
+    g_mllp.listenPort = GetPrivateProfileIntW(L"MLLP", L"ListenPort", 2575, ini.c_str());
+    g_mllp.allowNonLoopback = GetPrivateProfileIntW(L"MLLP", L"AllowNonLoopback", 0, ini.c_str()) != 0;
+    GetPrivateProfileStringW(L"MLLP", L"BindAddr", L"127.0.0.1", buf, 256, ini.c_str()); g_mllp.bindAddr = buf;
+}
+
+static void saveMllpConfig() {
+    std::wstring ini = mllpIniPath();
+    if (ini.empty()) return;
+    WritePrivateProfileStringW(L"MLLP", L"Enabled", g_mllp.enabled ? L"1" : L"0", ini.c_str());
+    WritePrivateProfileStringW(L"MLLP", L"Host", g_mllp.host.c_str(), ini.c_str());
+    WritePrivateProfileStringW(L"MLLP", L"SendPort", std::to_wstring(g_mllp.sendPort).c_str(), ini.c_str());
+    WritePrivateProfileStringW(L"MLLP", L"ListenPort", std::to_wstring(g_mllp.listenPort).c_str(), ini.c_str());
+    WritePrivateProfileStringW(L"MLLP", L"AllowNonLoopback", g_mllp.allowNonLoopback ? L"1" : L"0", ini.c_str());
+    WritePrivateProfileStringW(L"MLLP", L"BindAddr", g_mllp.bindAddr.c_str(), ini.c_str());
+}
+
+// Unique-ish control id for ACKs we generate (listener side). Called on the
+// listener thread; GetSystemTime + local buffer is thread-safe.
+static std::string genControlId() {
+    SYSTEMTIME st; GetSystemTime(&st);
+    char b[32];
+    sprintf_s(b, "PH%02u%02u%02u%03u", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    return b;
+}
+
+// One-time-per-session confirmation that PHI will cross the wire in cleartext.
+static bool confirmCleartextOnce() {
+    if (g_mllpCleartextAcked) return true;
+    int r = MessageBoxW(g_nppData._nppHandle,
+        L"MLLP sends and receives HL7 in CLEARTEXT over TCP.\r\n\r\n"
+        L"Protected Health Information (PHI) will cross the network unencrypted. "
+        L"Only use this over loopback or a trusted network.\r\n\r\nContinue?",
+        L"PipeHat MLLP \x2014 Cleartext Warning", MB_YESNO | MB_ICONWARNING);
+    if (r == IDYES) { g_mllpCleartextAcked = true; return true; }
+    return false;
+}
+
+// Reflect the listener's running state in the menu item's checkmark.
+static void updateListenerCheck() {
+    if (g_mllpListenerItemIdx < 0) return;
+    int cmdId = g_funcItems[g_mllpListenerItemIdx]._cmdID;
+    SendMessage(g_nppData._nppHandle, NPPM_SETMENUITEMCHECK,
+                (WPARAM)cmdId, (LPARAM)(g_listener.running() ? TRUE : FALSE));
+}
+
+// Hidden message-only window: runs on the UI thread so inbound messages and ACK
+// results posted from worker/listener threads are handled where it's safe to
+// touch Notepad++.
+static LRESULT CALLBACK mllpWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+        case WM_MLLP_RECEIVED: {
+            std::string* payload = (std::string*)l;
+            if (payload) {
+                SendMessage(g_nppData._nppHandle, NPPM_MENUCOMMAND, 0, IDM_FILE_NEW);
+                HWND hNew = getCurrentScintilla();
+                if (hNew) {
+                    SciFnDirect nfn = (SciFnDirect)SendMessage(hNew, SCI_GETDIRECTFUNCTION, 0, 0);
+                    sptr_t nptr = (sptr_t)SendMessage(hNew, SCI_GETDIRECTPOINTER, 0, 0);
+                    if (nfn) nfn(nptr, SCI_SETTEXT, 0, (sptr_t)payload->c_str());
+                }
+                // Force HL7 detection/styling on the freshly-populated buffer.
+                ScintillaView& view = getCurrentView();
+                view.isHL7 = false;
+                checkAndEnableHL7(view);
+                updateTreeVisibility(view);
+                delete payload;
+            }
+            return 0;
+        }
+        case WM_MLLP_ACK_RESULT: {
+            mllpnet::SendResult* r = (mllpnet::SendResult*)l;
+            if (r) {
+                std::wstring msg; UINT icon = MB_ICONINFORMATION;
+                if (!r->connected) {
+                    msg = L"Send failed: " + utf8ToW(r->error); icon = MB_ICONERROR;
+                } else if (!r->gotAck) {
+                    msg = L"Message sent, but no ACK was received.\r\n" + utf8ToW(r->error);
+                    icon = MB_ICONWARNING;
+                } else {
+                    mllp::ParsedAck pa = mllp::parseAck(r->ack);
+                    std::wstring code = utf8ToW(pa.code);
+                    bool pos = mllp::isPositiveAck(pa.code);
+                    msg = (pos ? L"ACK (accepted): " : L"NAK: ") + code;
+                    if (!pa.controlId.empty()) msg += L"\r\nControl ID: " + utf8ToW(pa.controlId);
+                    if (!pa.text.empty())      msg += L"\r\n" + utf8ToW(pa.text);
+                    icon = pos ? MB_ICONINFORMATION : MB_ICONWARNING;
+                }
+                MessageBoxW(g_nppData._nppHandle, msg.c_str(), L"PipeHat MLLP \x2014 Send", MB_OK | icon);
+                delete r;
+            }
+            return 0;
+        }
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+
+static void createMllpWindow() {
+    if (g_hMllpWnd) return;
+    WNDCLASSW wc; ZeroMemory(&wc, sizeof(wc));
+    wc.lpfnWndProc = mllpWndProc;
+    wc.hInstance = (HINSTANCE)g_hModule;
+    wc.lpszClassName = L"PipeHatMllpMsgWnd";
+    RegisterClassW(&wc); // harmless if already registered
+    g_hMllpWnd = CreateWindowExW(0, L"PipeHatMllpMsgWnd", L"", 0,
+        0, 0, 0, 0, HWND_MESSAGE, nullptr, (HINSTANCE)g_hModule, nullptr);
+}
+
+// Send the active message to the configured host:port over MLLP, on a worker
+// thread so a slow/hung endpoint can't freeze Notepad++. Result is marshaled
+// back to the UI thread for display.
+static void cmdMllpSend() {
+    if (!g_mllp.enabled) {
+        MessageBoxW(g_nppData._nppHandle,
+            L"MLLP networking is disabled.\r\n\r\nEnable it in Settings (Ctrl+Alt+S) \x2192 "
+            L"MLLP, then try again.", L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    ScintillaView& view = getCurrentView();
+    if (!view.fnDirect) {
+        MessageBoxW(g_nppData._nppHandle, L"No document is active.",
+                    L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    if (!confirmCleartextOnce()) return;
+
+    int len = (int)view.fnDirect(view.ptrDirect, SCI_GETLENGTH, 0, 0);
+    if (len <= 0) {
+        MessageBoxW(g_nppData._nppHandle, L"The document is empty.",
+                    L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    std::string bytes(static_cast<size_t>(len) + 1, '\0');
+    view.fnDirect(view.ptrDirect, SCI_GETTEXT, len + 1, (sptr_t)&bytes[0]);
+    bytes.resize(len);
+
+    // HL7 segments terminate with \r; normalize any \r\n / \n so receivers that
+    // are strict about the segment separator accept the message.
+    std::string norm; norm.reserve(bytes.size());
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        char c = bytes[i];
+        if (c == '\r') { norm.push_back('\r'); if (i + 1 < bytes.size() && bytes[i + 1] == '\n') ++i; }
+        else if (c == '\n') { norm.push_back('\r'); }
+        else norm.push_back(c);
+    }
+
+    std::string host = wToUtf8(g_mllp.host);
+    unsigned short port = (unsigned short)g_mllp.sendPort;
+    HWND target = g_hMllpWnd;
+    std::thread([host, port, norm, target]() {
+        mllpnet::SendResult r = mllpnet::sendSync(host, port, norm, 10000);
+        if (target) PostMessageW(target, WM_MLLP_ACK_RESULT, 0, (LPARAM)new mllpnet::SendResult(r));
+    }).detach();
+}
+
+// Start or stop the MLLP listener. Loopback by default; a non-loopback bind is
+// gated behind the opt-in setting AND an extra confirmation.
+static void cmdMllpToggleListener() {
+    if (g_listener.running()) {
+        g_listener.stop();
+        updateListenerCheck();
+        MessageBoxW(g_nppData._nppHandle, L"MLLP listener stopped.",
+                    L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    if (!g_mllp.enabled) {
+        MessageBoxW(g_nppData._nppHandle,
+            L"MLLP networking is disabled.\r\n\r\nEnable it in Settings (Ctrl+Alt+S) \x2192 "
+            L"MLLP, then try again.", L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    if (!confirmCleartextOnce()) return;
+
+    std::wstring bindW = g_mllp.effectiveBindAddr();
+    if (bindW != L"127.0.0.1") {
+        int r = MessageBoxW(g_nppData._nppHandle,
+            (L"You are about to bind a NON-LOOPBACK interface (" + bindW + L").\r\n\r\n"
+             L"This exposes an HL7 receiver on your network that accepts inbound PHI "
+             L"in cleartext. Continue?").c_str(),
+            L"PipeHat MLLP \x2014 Non-loopback bind", MB_YESNO | MB_ICONWARNING);
+        if (r != IDYES) return;
+    }
+
+    std::string bind = wToUtf8(bindW);
+    unsigned short port = (unsigned short)g_mllp.listenPort;
+    std::string err;
+    mllpnet::Listener::Handler handler = [](const std::string& raw) -> std::string {
+        // Marshal the inbound message to the UI thread for a new buffer.
+        if (g_hMllpWnd) PostMessageW(g_hMllpWnd, WM_MLLP_RECEIVED, 0, (LPARAM)new std::string(raw));
+        mllp::AckResult ack = mllp::buildAck(raw, mllp::AckCode::AA, genControlId());
+        return ack.ok ? ack.message : std::string();
+    };
+
+    if (g_listener.start(bind, port, handler, err)) {
+        updateListenerCheck();
+        std::wstring m = L"MLLP listener started on " + bindW + L":" +
+                         std::to_wstring((int)g_listener.port()) +
+                         L".\r\n\r\nInbound messages open in new tabs and are auto-ACKed (AA).";
+        MessageBoxW(g_nppData._nppHandle, m.c_str(), L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION);
+    } else {
+        MessageBoxW(g_nppData._nppHandle,
+            (L"Could not start the listener: " + utf8ToW(err)).c_str(),
+            L"PipeHat MLLP", MB_OK | MB_ICONERROR);
     }
 }
 
@@ -748,13 +999,14 @@ static void cmdCompareClipboard() {
 // ── Menu commands ──
 static void cmdAbout() {
     MessageBoxW(g_nppData._nppHandle,
-        L"PipeHat v1.2.0 \x2014 HL7 v2.x for Notepad++\r\n\r\n"
+        L"PipeHat " HL7_PLUGIN_VERSION L" \x2014 HL7 v2.x for Notepad++\r\n\r\n"
         L"Highlighting, tooltips (trigger-event + version + escape decode),\r\n"
         L"message tree, PHI scrubbing, conformance + structural validation,\r\n"
-        L"compare/diff, pretty-print, and folding.\r\n\r\n"
+        L"compare/diff, pretty-print, folding, and MLLP send/receive.\r\n\r\n"
         L"Hotkeys (Ctrl+Alt+ ...): T tree, H scrub, C check, V validate,\r\n"
-        L"D diff, R reformat, E enable, F fold, Left/Right field nav.\r\n"
-        L"Activates on MSH/FHS/BHS content or a .hl7 file.",
+        L"D diff, R reformat, E enable, F fold, S settings, M send, L listen,\r\n"
+        L"Left/Right field nav. Activates on MSH/FHS/BHS content or a .hl7 file.\r\n\r\n"
+        L"MLLP networking is OFF by default \x2014 enable it in Settings.",
         L"About PipeHat", MB_OK | MB_ICONINFORMATION);
 }
 
@@ -858,7 +1110,9 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skEnable     = { true, true, false, 'E' };            // Ctrl+Alt+E  — force-enable HL7 mode
     g_skValidate   = { true, true, false, 'V' };            // Ctrl+Alt+V  — validate / malform check
     g_skCompare    = { true, true, false, 'D' };            // Ctrl+Alt+D  — diff vs clipboard
-    g_skSettings   = { true, true, false, 'S' };            // Ctrl+Alt+S  — settings (conformance rules)
+    g_skSettings   = { true, true, false, 'S' };            // Ctrl+Alt+S  — settings
+    g_skMllpSend   = { true, true, false, 'M' };            // Ctrl+Alt+M  — MLLP send message
+    g_skMllpListen = { true, true, false, 'L' };            // Ctrl+Alt+L  — MLLP listener toggle
 
     g_nbFuncItems = 0;
 
@@ -939,6 +1193,21 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._pShKey = &g_skSettings;
     g_nbFuncItems++;
 
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Send Message (MLLP)");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdMllpSend;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skMllpSend;
+    g_nbFuncItems++;
+
+    g_mllpListenerItemIdx = g_nbFuncItems;
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Toggle MLLP Listener");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdMllpToggleListener;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skMllpListen;
+    g_nbFuncItems++;
+
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"About PipeHat");
     g_funcItems[g_nbFuncItems]._pFunc = cmdAbout;
     g_funcItems[g_nbFuncItems]._cmdID = 0;
@@ -974,10 +1243,20 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
             ScintillaView& view = getCurrentView();
             checkAndEnableHL7(view);
             loadProfile();
+            loadMllpConfig();
+            createMllpWindow();
             g_treeView.create((HINSTANCE)g_hModule, g_nppData._nppHandle, &g_nppData);
             // Force the panel hidden at startup regardless of any dock state
             // Notepad++ restored from the previous session (g_treeIntent is false).
             updateTreeVisibility(view);
+            break;
+        }
+
+        case NPPN_SHUTDOWN: {
+            // Stop the listener (joins its thread) and tear down the marshaling
+            // window on the UI thread — never in DllMain (loader lock).
+            if (g_listener.running()) g_listener.stop();
+            if (g_hMllpWnd) { DestroyWindow(g_hMllpWnd); g_hMllpWnd = nullptr; }
             break;
         }
 

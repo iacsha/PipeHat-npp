@@ -27,6 +27,7 @@ std::vector<Rule> g_rules;
 std::wstring      g_path;
 int               g_editIndex = -1;   // -1 = Add, >=0 = edit that row
 Rule              g_editResult;        // handed back from the rule editor
+MllpConfig*       g_cfg = nullptr;     // MLLP settings being edited (not owned)
 
 // ── small text helpers ──
 std::wstring utf8ToW(const std::string& s) {
@@ -177,6 +178,32 @@ std::wstring getText(HWND h, int id) {
     return trim(buf);
 }
 
+// ── MLLP section of the settings dialog ──
+void populateMllp(HWND hDlg) {
+    if (!g_cfg) return;
+    setChecked(hDlg, IDC_MLLP_ENABLE, g_cfg->enabled);
+    SetDlgItemTextW(hDlg, IDC_MLLP_HOST, g_cfg->host.c_str());
+    SetDlgItemTextW(hDlg, IDC_MLLP_SENDPORT, std::to_wstring(g_cfg->sendPort).c_str());
+    SetDlgItemTextW(hDlg, IDC_MLLP_LISTENPORT, std::to_wstring(g_cfg->listenPort).c_str());
+    setChecked(hDlg, IDC_MLLP_ALLOWNONLOOP, g_cfg->allowNonLoopback);
+    SetDlgItemTextW(hDlg, IDC_MLLP_BINDADDR, g_cfg->bindAddr.c_str());
+    EnableWindow(GetDlgItem(hDlg, IDC_MLLP_BINDADDR), g_cfg->allowNonLoopback);
+}
+
+void readMllp(HWND hDlg) {
+    if (!g_cfg) return;
+    g_cfg->enabled = isChecked(hDlg, IDC_MLLP_ENABLE);
+    g_cfg->host = getText(hDlg, IDC_MLLP_HOST);
+    if (g_cfg->host.empty()) g_cfg->host = L"127.0.0.1";
+    int sp = _wtoi(getText(hDlg, IDC_MLLP_SENDPORT).c_str());
+    if (sp > 0 && sp <= 65535) g_cfg->sendPort = sp;
+    int lp = _wtoi(getText(hDlg, IDC_MLLP_LISTENPORT).c_str());
+    if (lp > 0 && lp <= 65535) g_cfg->listenPort = lp;
+    g_cfg->allowNonLoopback = isChecked(hDlg, IDC_MLLP_ALLOWNONLOOP);
+    g_cfg->bindAddr = getText(hDlg, IDC_MLLP_BINDADDR);
+    if (g_cfg->bindAddr.empty()) g_cfg->bindAddr = L"127.0.0.1";
+}
+
 INT_PTR CALLBACK ruleProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM) {
     switch (msg) {
         case WM_INITDIALOG: {
@@ -278,6 +305,7 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
             initColumns(hList);
             loadRules(g_path);
             populateList(hList);
+            populateMllp(hDlg);
             return TRUE;
         }
         case WM_NOTIFY: {
@@ -297,6 +325,10 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
         case WM_COMMAND: {
             HWND hList = GetDlgItem(hDlg, IDC_RULE_LIST);
             switch (LOWORD(wParam)) {
+                case IDC_MLLP_ALLOWNONLOOP:
+                    EnableWindow(GetDlgItem(hDlg, IDC_MLLP_BINDADDR),
+                                 isChecked(hDlg, IDC_MLLP_ALLOWNONLOOP));
+                    return TRUE;
                 case IDC_RULE_ADD:
                     g_editIndex = -1;
                     editRule(hDlg, s_hInst, hList);
@@ -329,6 +361,7 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
                                     L"PipeHat Settings", MB_OK | MB_ICONERROR);
                         return TRUE;
                     }
+                    readMllp(hDlg);
                     EndDialog(hDlg, IDOK);
                     return TRUE;
                 case IDCANCEL:
@@ -345,8 +378,10 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 
 namespace SettingsDialog {
 
-bool runModal(HINSTANCE hInst, HWND hParent, const std::wstring& profilePath) {
+bool runModal(HINSTANCE hInst, HWND hParent, const std::wstring& profilePath,
+              MllpConfig& cfg) {
     g_path = profilePath;
+    g_cfg = &cfg;
 
     INITCOMMONCONTROLSEX icc;
     icc.dwSize = sizeof(icc);
@@ -354,6 +389,7 @@ bool runModal(HINSTANCE hInst, HWND hParent, const std::wstring& profilePath) {
     InitCommonControlsEx(&icc);
 
     INT_PTR r = DialogBoxParamW(hInst, MAKEINTRESOURCEW(IDD_SETTINGS), hParent, settingsProc, 0);
+    g_cfg = nullptr;
     return (r == IDOK);
 }
 

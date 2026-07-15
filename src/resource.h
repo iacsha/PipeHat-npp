@@ -21,3 +21,11 @@
 #define IDC_RULE_VALCHK   1014
 #define IDC_RULE_VALUES   1015
 #define IDC_RULE_REQ      1016
+
+// MLLP (network) section of the settings dialog (IDD_SETTINGS)
+#define IDC_MLLP_ENABLE       1020
+#define IDC_MLLP_HOST         1021
+#define IDC_MLLP_SENDPORT     1022
+#define IDC_MLLP_LISTENPORT   1023
+#define IDC_MLLP_ALLOWNONLOOP 1024
+#define IDC_MLLP_BINDADDR     1025
