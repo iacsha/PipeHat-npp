@@ -707,9 +707,8 @@ static LRESULT CALLBACK mllpWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_MLLP_RECEIVED: {
             std::string* payload = (std::string*)l;
             if (payload) {
-                // HL7 segments arrive terminated by lone CR; normalize to CRLF so the
-                // new buffer displays as normal lines (and doesn't depend on lone-CR
-                // handling for detection).
+                // HL7 segments arrive terminated by lone CR; normalize to CRLF for a
+                // clean saved file that displays as normal lines.
                 std::string disp; disp.reserve(payload->size());
                 for (size_t i = 0; i < payload->size(); ++i) {
                     char c = (*payload)[i];
@@ -718,36 +717,66 @@ static LRESULT CALLBACK mllpWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     else disp.push_back(c);
                 }
 
-                SendMessage(g_nppData._nppHandle, NPPM_MENUCOMMAND, 0, IDM_FILE_NEW);
-                HWND hNew = getCurrentScintilla();
-                if (hNew) {
-                    SciFnDirect nfn = (SciFnDirect)SendMessage(hNew, SCI_GETDIRECTFUNCTION, 0, 0);
-                    sptr_t nptr = (sptr_t)SendMessage(hNew, SCI_GETDIRECTPOINTER, 0, 0);
-                    if (nfn) nfn(nptr, SCI_SETTEXT, 0, (sptr_t)disp.c_str());
+                // Parse MSH-9 (type) and MSH-10 (control id) for the filename + log.
+                auto segs = mllp::segments(*payload);
+                std::string type = "MSG", ctrl;
+                for (auto& s : segs) {
+                    if (s.size() >= 4 && s.compare(0, 3, "MSH") == 0) {
+                        auto f = mllp::splitCh(s, s[3]);
+                        if (f.size() > 8 && !f[8].empty()) type = f[8];   // MSH-9
+                        if (f.size() > 9) ctrl = f[9];                    // MSH-10
+                        break;
+                    }
                 }
-                // The message came in over MLLP (it has an MSH — we ACKed it), so
-                // force the HL7 "pretty text" + tree rather than relying on detection.
+                auto sanitize = [](std::string s) {
+                    for (auto& c : s) {
+                        bool ok = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
+                                  (c >= 'a' && c <= 'z') || c == '_' || c == '-';
+                        if (!ok) c = '_';
+                    }
+                    return s;
+                };
+                SYSTEMTIME st; GetLocalTime(&st);
+                char ts[32];
+                sprintf_s(ts, "%02u%02u%02u_%03u", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+                std::string fname = sanitize(type) + "_" +
+                                    (ctrl.empty() ? std::string() : sanitize(ctrl) + "_") + ts + ".hl7";
+
+                // Save to <config>\received\ and open the file. A titled .hl7 buffer
+                // activates via its extension and keeps its coloring reliably — far
+                // more robust than an untitled "new N" buffer.
+                bool opened = false;
+                std::wstring dir = configDirW();
+                if (!dir.empty()) {
+                    dir += L"\\received";
+                    CreateDirectoryW(dir.c_str(), nullptr);
+                    std::wstring path = dir + L"\\" + utf8ToW(fname);
+                    std::ofstream out(path.c_str(), std::ios::binary);
+                    if (out) {
+                        out.write(disp.data(), (std::streamsize)disp.size());
+                        out.close();
+                        if (SendMessage(g_nppData._nppHandle, NPPM_DOOPEN, 0, (LPARAM)path.c_str()))
+                            opened = true;
+                    }
+                }
+                // Fallback to an untitled buffer if saving/opening failed.
+                if (!opened) {
+                    SendMessage(g_nppData._nppHandle, NPPM_MENUCOMMAND, 0, IDM_FILE_NEW);
+                    HWND hNew = getCurrentScintilla();
+                    if (hNew) {
+                        SciFnDirect nfn = (SciFnDirect)SendMessage(hNew, SCI_GETDIRECTFUNCTION, 0, 0);
+                        sptr_t nptr = (sptr_t)SendMessage(hNew, SCI_GETDIRECTPOINTER, 0, 0);
+                        if (nfn) nfn(nptr, SCI_SETTEXT, 0, (sptr_t)disp.c_str());
+                    }
+                }
+
                 ScintillaView& view = getCurrentView();
                 applyHL7Styling(view);
                 updateTreeVisibility(view);
 
-                // Log metadata only (type, control id, segment count) — no body.
-                auto segs = mllp::segments(*payload);
-                std::wstring type = L"?", ctrl = L"?";
-                for (auto& s : segs) {
-                    if (s.size() >= 3 && s.compare(0, 3, "MSH") == 0) {
-                        char fs = s.size() >= 4 ? s[3] : '|';
-                        auto f = mllp::splitCh(s, fs);
-                        auto nrw = [](const std::string& a) {
-                            return std::wstring(a.begin(), a.end());
-                        };
-                        if (f.size() > 8) type = nrw(f[8]);   // MSH-9
-                        if (f.size() > 9) ctrl = nrw(f[9]);   // MSH-10
-                        break;
-                    }
-                }
-                logEvent(L"MLLP", L"Inbound type=" + type + L" control=" + ctrl +
-                         L" segments=" + std::to_wstring((int)segs.size()) + L", ACK AA");
+                logEvent(L"MLLP", L"Inbound type=" + utf8ToW(type) + L" control=" + utf8ToW(ctrl) +
+                         L" segments=" + std::to_wstring((int)segs.size()) +
+                         L", ACK AA, saved " + utf8ToW(fname));
                 delete payload;
             }
             return 0;
@@ -1745,7 +1774,7 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skCompare    = { true, true, false, 'D' };            // Ctrl+Alt+D  — compare the two views
     g_skSettings   = { true, true, false, 'P' };            // Ctrl+Alt+P  — settings (S is NPP "Save As")
     g_skMllpSend   = { true, true, false, 'M' };            // Ctrl+Alt+M  — MLLP send message
-    g_skMllpListen = { true, true, false, 'L' };            // Ctrl+Alt+L  — MLLP listener toggle
+    g_skMllpListen = { true, true, true, 'L' };             // Ctrl+Alt+Shift+L — MLLP listener toggle (Ctrl+Alt+L is grabbed on some machines)
     g_skCopyPath   = { true, true, false, 'K' };            // Ctrl+Alt+K  — copy field path
     g_skCopyRtf    = { true, true, false, 'W' };            // Ctrl+Alt+W  — copy as rich text
 
@@ -1998,20 +2027,28 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
             ScintillaView* view = nullptr;
             if (notifyCode->nmhdr.hwndFrom == g_viewMain.hWnd) view = &g_viewMain;
             else if (notifyCode->nmhdr.hwndFrom == g_viewSub.hWnd) view = &g_viewSub;
-            if (!view || !view->isHL7) break;
+            if (!view || !view->fnDirect) break;
 
-            // Self-heal the coloring: Notepad++ applies the buffer's language
-            // lexer (NULL for "Normal Text") on activation, and a NULL lexer
-            // repaints every visible line to style 0 — wiping our colors on tab
-            // switch. If the container lexer isn't currently set, re-assert it and
-            // re-style. This settles in one cycle (once container is set, the check
-            // is a no-op) so there's no flicker loop.
-            if ((int)view->fnDirect(view->ptrDirect, SCI_GETLEXER, 0, 0) != SCLEX_CONTAINER) {
-                view->fnDirect(view->ptrDirect, SCI_SETLEXER, SCLEX_CONTAINER, 0);
-                view->styler.styleAll();
+            // Re-detect on the SETTLED current document: NPPN_BUFFERACTIVATED can
+            // fire before the buffer switch finishes, so view.isHL7 set there can be
+            // stale (based on the previous buffer). UPDATEUI fires on paint, after
+            // the switch, so detection here is reliable.
+            bool isHL7 = ScintillaStyler::detectHL7(view->hWnd, view->fnDirect, view->ptrDirect)
+                         || currentPathHasHl7Ext();
+            view->isHL7 = isHL7;
+            if (isHL7) {
+                // Self-heal: if a leading segment-id character isn't styled as one,
+                // our coloring was wiped (NPP re-applied the buffer language on
+                // activation) — re-assert the container lexer and re-style. Once
+                // styled the check is a no-op, so no flicker loop.
+                int ch0 = (int)view->fnDirect(view->ptrDirect, SCI_GETCHARAT, 0, 0);
+                int st0 = (int)view->fnDirect(view->ptrDirect, SCI_GETSTYLEAT, 0, 0);
+                if (ch0 >= 'A' && ch0 <= 'Z' && st0 != SCE_HL7_SEGMENT_ID) {
+                    view->fnDirect(view->ptrDirect, SCI_SETLEXER, SCLEX_CONTAINER, 0);
+                    view->styler.styleAll();
+                }
+                if (notifyCode->updated & SC_UPDATE_SELECTION) highlightCurrentField(*view);
             }
-            // Refresh the current-field highlight on caret/selection changes only.
-            if (notifyCode->updated & SC_UPDATE_SELECTION) highlightCurrentField(*view);
             break;
         }
 
