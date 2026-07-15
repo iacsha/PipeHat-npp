@@ -622,7 +622,7 @@ static void createMllpWindow() {
 static void cmdMllpSend() {
     if (!g_mllp.enabled) {
         MessageBoxW(g_nppData._nppHandle,
-            L"MLLP networking is disabled.\r\n\r\nEnable it in Settings (Ctrl+Alt+S) \x2192 "
+            L"MLLP networking is disabled.\r\n\r\nEnable it in Settings (Ctrl+Alt+P) \x2192 "
             L"MLLP, then try again.", L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION);
         return;
     }
@@ -675,7 +675,7 @@ static void cmdMllpToggleListener() {
     }
     if (!g_mllp.enabled) {
         MessageBoxW(g_nppData._nppHandle,
-            L"MLLP networking is disabled.\r\n\r\nEnable it in Settings (Ctrl+Alt+S) \x2192 "
+            L"MLLP networking is disabled.\r\n\r\nEnable it in Settings (Ctrl+Alt+P) \x2192 "
             L"MLLP, then try again.", L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION);
         return;
     }
@@ -1233,6 +1233,16 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
         }
 
         case NPPN_FILESAVED: {
+            ScintillaView& view = getCurrentView();
+            checkAndEnableHL7(view);
+            updateTreeVisibility(view);
+            break;
+        }
+
+        case NPPN_FILECLOSED: {
+            // Re-evaluate against the now-active buffer. BUFFERACTIVATED can fire
+            // mid-close before the view switch settles; FILECLOSED fires after, so
+            // this reliably hides the tree when the closed HL7 message is gone.
             ScintillaView& view = getCurrentView();
             checkAndEnableHL7(view);
             updateTreeVisibility(view);
