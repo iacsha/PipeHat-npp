@@ -660,7 +660,8 @@ static bool confirmCleartextOnce() {
         L"MLLP sends and receives HL7 in CLEARTEXT over TCP.\r\n\r\n"
         L"Protected Health Information (PHI) will cross the network unencrypted. "
         L"Only use this over loopback or a trusted network.\r\n\r\nContinue?",
-        L"PipeHat MLLP \x2014 Cleartext Warning", MB_YESNO | MB_ICONWARNING);
+        L"PipeHat MLLP \x2014 Cleartext Warning",
+        MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST);
     if (r == IDYES) { g_mllpCleartextAcked = true; return true; }
     return false;
 }
@@ -827,7 +828,8 @@ static void cmdMllpSend() {
     if (!g_mllp.enabled) {
         MessageBoxW(g_nppData._nppHandle,
             L"MLLP networking is disabled.\r\n\r\nEnable it in Settings (Ctrl+Alt+P) \x2192 "
-            L"MLLP, then try again.", L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION);
+            L"MLLP, then try again.", L"PipeHat MLLP",
+            MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
         return;
     }
     ScintillaView& view = getCurrentView();
@@ -876,13 +878,14 @@ static void cmdMllpToggleListener() {
         updateListenerCheck();
         logEvent(L"MLLP", L"Listener stopped");
         MessageBoxW(g_nppData._nppHandle, L"MLLP listener stopped.",
-                    L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION);
+                    L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
         return;
     }
     if (!g_mllp.enabled) {
         MessageBoxW(g_nppData._nppHandle,
             L"MLLP networking is disabled.\r\n\r\nEnable it in Settings (Ctrl+Alt+P) \x2192 "
-            L"MLLP, then try again.", L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION);
+            L"MLLP, then try again.", L"PipeHat MLLP",
+            MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
         return;
     }
     if (!confirmCleartextOnce()) return;
@@ -893,7 +896,8 @@ static void cmdMllpToggleListener() {
             (L"You are about to bind a NON-LOOPBACK interface (" + bindW + L").\r\n\r\n"
              L"This exposes an HL7 receiver on your network that accepts inbound PHI "
              L"in cleartext. Continue?").c_str(),
-            L"PipeHat MLLP \x2014 Non-loopback bind", MB_YESNO | MB_ICONWARNING);
+            L"PipeHat MLLP \x2014 Non-loopback bind",
+            MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST);
         if (r != IDYES) return;
     }
 
@@ -913,11 +917,12 @@ static void cmdMllpToggleListener() {
         std::wstring m = L"MLLP listener started on " + bindW + L":" +
                          std::to_wstring((int)g_listener.port()) +
                          L".\r\n\r\nInbound messages open in new tabs and are auto-ACKed (AA).";
-        MessageBoxW(g_nppData._nppHandle, m.c_str(), L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(g_nppData._nppHandle, m.c_str(), L"PipeHat MLLP",
+                    MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
     } else {
         MessageBoxW(g_nppData._nppHandle,
             (L"Could not start the listener: " + utf8ToW(err)).c_str(),
-            L"PipeHat MLLP", MB_OK | MB_ICONERROR);
+            L"PipeHat MLLP", MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
     }
 }
 
@@ -1990,13 +1995,23 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
         }
 
         case SCN_UPDATEUI: {
-            // Refresh the current-field highlight only on caret/selection changes
-            // (not scroll), for the view whose selection moved.
-            if ((notifyCode->updated & SC_UPDATE_SELECTION) == 0) break;
             ScintillaView* view = nullptr;
             if (notifyCode->nmhdr.hwndFrom == g_viewMain.hWnd) view = &g_viewMain;
             else if (notifyCode->nmhdr.hwndFrom == g_viewSub.hWnd) view = &g_viewSub;
-            if (view && view->isHL7) highlightCurrentField(*view);
+            if (!view || !view->isHL7) break;
+
+            // Self-heal the coloring: Notepad++ applies the buffer's language
+            // lexer (NULL for "Normal Text") on activation, and a NULL lexer
+            // repaints every visible line to style 0 — wiping our colors on tab
+            // switch. If the container lexer isn't currently set, re-assert it and
+            // re-style. This settles in one cycle (once container is set, the check
+            // is a no-op) so there's no flicker loop.
+            if ((int)view->fnDirect(view->ptrDirect, SCI_GETLEXER, 0, 0) != SCLEX_CONTAINER) {
+                view->fnDirect(view->ptrDirect, SCI_SETLEXER, SCLEX_CONTAINER, 0);
+                view->styler.styleAll();
+            }
+            // Refresh the current-field highlight on caret/selection changes only.
+            if (notifyCode->updated & SC_UPDATE_SELECTION) highlightCurrentField(*view);
             break;
         }
 
