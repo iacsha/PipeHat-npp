@@ -46,6 +46,9 @@ typedef sptr_t (*SciFnDirect)(sptr_t ptr, unsigned int iMessage, uptr_t wParam, 
 #define SCI_GETCHARAT 2007
 #define SCI_GETCURRENTPOS 2008
 #define SCI_GETSTYLEAT 2010
+#define SCI_GETENDSTYLED 2028
+#define SCI_STYLEGETFORE 2481
+#define SCN_PAINTED 2013
 #define SCI_LINEFROMPOSITION 2166
 #define SCI_POSITIONFROMLINE 2167
 #define SCI_GETLINEENDPOSITION 2136

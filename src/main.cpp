@@ -123,6 +123,11 @@ static void cmdCheckUpdates() {
 // on startup and closes itself when the HL7 message is closed.
 static bool g_treeIntent = false;
 
+// Per-activation budget for the SCN_PAINTED styling self-heal. Normally one heal
+// converges (heal -> clean repaint -> checks pass); the cap prevents a ping-pong
+// loop if NPP ever re-wipes on every paint, and hitting it is logged as evidence.
+static int g_healCount = 0;
+
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
 static FuncItem g_funcItems[19];
@@ -230,11 +235,24 @@ static void applyHL7Styling(ScintillaView& view) {
     view.lexer.reset();
     view.styler.defineStyles();
     view.styler.styleAll();
+    // NOTE: SCI_SETLEXER(SCLEX_CONTAINER) was removed in Scintilla 5 (NPP 8.4+),
+    // where it is a silent no-op — container mode never engages there, so our
+    // styling is manual bytes that NPP may wipe when it re-applies the buffer's
+    // language. The SCN_PAINTED self-heal below recovers from those wipes. The
+    // call is kept for pre-5 Notepad++ where container mode does engage.
+    // (SCI_COLOURISE was removed here: with a real lexer attached it re-runs that
+    // lexer over the range, actively erasing the manual styling just written.)
     view.fnDirect(view.ptrDirect, SCI_SETLEXER, SCLEX_CONTAINER, 0);
-    int length = (int)view.fnDirect(view.ptrDirect, SCI_GETLENGTH, 0, 0);
-    view.fnDirect(view.ptrDirect, SCI_COLOURISE, 0, length - 1);
     setFoldLevels(view);
     g_treeView.refresh(view.hWnd, view.fnDirect, view.ptrDirect, view.lexer, g_segmentDB);
+}
+
+// Lightweight recolor for the SCN_PAINTED self-heal: definitions + bytes only,
+// no fold/tree churn (those don't get wiped by NPP's language re-apply).
+static void healStyling(ScintillaView& view) {
+    view.isHL7 = true;
+    view.styler.defineStyles();
+    view.styler.styleAll();
 }
 
 static void checkAndEnableHL7(ScintillaView& view) {
@@ -862,7 +880,7 @@ static void createMllpWindow() {
 static void cmdMllpSend() {
     if (!g_mllp.enabled) {
         MessageBoxW(g_nppData._nppHandle,
-            L"MLLP networking is disabled.\r\n\r\nEnable it in Settings (Ctrl+Alt+P) \x2192 "
+            L"MLLP networking is disabled.\r\n\r\nEnable it in Settings (Ctrl+Alt+Shift+P) \x2192 "
             L"MLLP, then try again.", L"PipeHat MLLP",
             MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
         return;
@@ -918,7 +936,7 @@ static void cmdMllpToggleListener() {
     }
     if (!g_mllp.enabled) {
         MessageBoxW(g_nppData._nppHandle,
-            L"MLLP networking is disabled.\r\n\r\nEnable it in Settings (Ctrl+Alt+P) \x2192 "
+            L"MLLP networking is disabled.\r\n\r\nEnable it in Settings (Ctrl+Alt+Shift+P) \x2192 "
             L"MLLP, then try again.", L"PipeHat MLLP",
             MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
         return;
@@ -1927,6 +1945,7 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
 
     switch (notifyCode->nmhdr.code) {
         case NPPN_BUFFERACTIVATED: {
+            g_healCount = 0;   // fresh self-heal budget for the newly active buffer
             ScintillaView& view = getCurrentView();
             checkAndEnableHL7(view);
             // Follow the active buffer: reveal the panel for HL7 messages (if the
@@ -2032,32 +2051,58 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
             break;
         }
 
-        case SCN_UPDATEUI: {
+        case SCN_PAINTED: {
+            // Styling self-heal — the mechanism that actually survives NPP's wipes.
+            // SCI_SETLEXER(SCLEX_CONTAINER) is a no-op on Scintilla 5 (NPP 8.4+),
+            // so NPP still owns the buffer's lexer and wipes our manual styling
+            // whenever it re-applies the buffer's language — at times we cannot
+            // predict (every prior timing-based fix lost this race). SCN_PAINTED
+            // fires after EVERY paint, including the one right after any wipe, so
+            // checking health here and re-styling converges no matter when the
+            // wipe lands: wiped paint -> heal -> clean repaint -> checks pass.
             ScintillaView* view = nullptr;
             if (notifyCode->nmhdr.hwndFrom == g_viewMain.hWnd) view = &g_viewMain;
             else if (notifyCode->nmhdr.hwndFrom == g_viewSub.hWnd) view = &g_viewSub;
             if (!view || !view->fnDirect) break;
+            SciFnDirect fn = view->fnDirect;
+            sptr_t ptr = view->ptrDirect;
 
-            // Re-detect on the SETTLED current document: NPPN_BUFFERACTIVATED can
-            // fire before the buffer switch finishes, so view.isHL7 set there can be
-            // stale (based on the previous buffer). UPDATEUI fires on paint, after
-            // the switch, so detection here is reliable.
-            bool isHL7 = ScintillaStyler::detectHL7(view->hWnd, view->fnDirect, view->ptrDirect)
-                         || currentPathHasHl7Ext();
-            view->isHL7 = isHL7;
-            if (isHL7) {
-                // Self-heal: if a leading segment-id character isn't styled as one,
-                // our coloring was wiped (NPP re-applied the buffer language on
-                // activation) — re-assert the container lexer and re-style. Once
-                // styled the check is a no-op, so no flicker loop.
-                int ch0 = (int)view->fnDirect(view->ptrDirect, SCI_GETCHARAT, 0, 0);
-                int st0 = (int)view->fnDirect(view->ptrDirect, SCI_GETSTYLEAT, 0, 0);
-                if (ch0 >= 'A' && ch0 <= 'Z' && st0 != SCE_HL7_SEGMENT_ID) {
-                    view->fnDirect(view->ptrDirect, SCI_SETLEXER, SCLEX_CONTAINER, 0);
-                    view->styler.styleAll();
-                }
-                if (notifyCode->updated & SC_UPDATE_SELECTION) highlightCurrentField(*view);
+            // Cheap health gate first (3 direct calls when everything is fine).
+            int len = (int)fn(ptr, SCI_GETLENGTH, 0, 0);
+            if (len < 4) break;
+            int ch0 = (int)fn(ptr, SCI_GETCHARAT, 0, 0);
+            if (ch0 < 'A' || ch0 > 'Z') break;                      // not segment-shaped
+            int st0  = (int)fn(ptr, SCI_GETSTYLEAT, 0, 0);
+            int fore = (int)fn(ptr, SCI_STYLEGETFORE, SCE_HL7_SEGMENT_ID, 0);
+            bool bytesOk = (st0 == SCE_HL7_SEGMENT_ID);             // style bytes intact
+            bool defsOk  = (fore == 0xC00000);                      // style defs intact (theme re-apply resets these)
+            if (bytesOk && defsOk) break;                           // healthy
+
+            // Unhealthy: confirm it really is HL7 on the settled document, then heal.
+            if (!ScintillaStyler::detectHL7(view->hWnd, fn, ptr) && !currentPathHasHl7Ext()) {
+                view->isHL7 = false;
+                break;
             }
+            if (g_healCount >= 8) break;                            // never ping-pong forever
+            g_healCount++;
+            // Diagnostic trail: which wipe mode occurred and how often.
+            logEvent(L"STYLE", L"heal#" + std::to_wstring(g_healCount) +
+                     L" bytes=" + (bytesOk ? L"ok" : L"wiped") +
+                     L" defs=" + (defsOk ? L"ok" : L"reset") +
+                     L" endStyled=" + std::to_wstring((int)fn(ptr, SCI_GETENDSTYLED, 0, 0)) +
+                     L"/" + std::to_wstring(len));
+            healStyling(*view);
+            break;
+        }
+
+        case SCN_UPDATEUI: {
+            // Current-field highlight on caret/selection moves. Healing lives in
+            // SCN_PAINTED (every UPDATEUI is followed by a paint).
+            if ((notifyCode->updated & SC_UPDATE_SELECTION) == 0) break;
+            ScintillaView* view = nullptr;
+            if (notifyCode->nmhdr.hwndFrom == g_viewMain.hWnd) view = &g_viewMain;
+            else if (notifyCode->nmhdr.hwndFrom == g_viewSub.hWnd) view = &g_viewSub;
+            if (view && view->isHL7) highlightCurrentField(*view);
             break;
         }
 

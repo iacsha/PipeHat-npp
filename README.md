@@ -30,7 +30,7 @@ knows by heart.
 - **Structural validation** — advisory malform detection: missing MSH, invalid segment IDs,
   empty required MSH fields, unterminated escape sequences. Never blocking.
 - **Compare views** — put one message in each of Notepad++'s two split views and run
-  Compare Views (`Ctrl+Alt+D`); every differing field is highlighted **in place in both panes**,
+  Compare Views (`Ctrl+Alt+Shift+D`); every differing field is highlighted **in place in both panes**,
   segment- and field-aware (ignores volatile MSH-7 datetime / MSH-10 control ID).
 - **Pretty-print** — put every segment on its own line (fixes single-line CR-delimited
   messages), and **folding** to collapse detail-segment groups (OBX/NTE under their parent).
@@ -39,18 +39,23 @@ knows by heart.
 
 The plugin activates automatically on HL7 **content** (first non-blank segment is `MSH`,
 `FHS`, or `BHS`) or a **`.hl7` file**. You can also force it on any buffer with
-*Enable HL7 Highlighting* (`Ctrl+Alt+E`).
+*Enable HL7 Highlighting* (`Ctrl+Alt+Shift+E`).
 
 ## Keyboard shortcuts
 
 | Shortcut | Action | Shortcut | Action |
 |----------|--------|----------|--------|
-| `Ctrl+Alt+T` | Toggle message tree | `Ctrl+Alt+V` | Validate message |
-| `Ctrl+Alt+H` | Scrub PHI | `Ctrl+Alt+D` | Compare the two views |
-| `Ctrl+Alt+C` | Check conformance | `Ctrl+Alt+R` | Pretty-print / reformat |
-| `Ctrl+Alt+G` | Toggle folding | `Ctrl+Alt+E` | Enable HL7 highlighting |
-| `Ctrl+Alt+←` / `→` | Previous / next field | `Ctrl+Alt+P` | Settings |
-| `Ctrl+Alt+M` | Send message (MLLP) | `Ctrl+Alt+L` | Toggle MLLP listener |
+| `Ctrl+Alt+Shift+T` | Toggle message tree | `Ctrl+Alt+Shift+V` | Validate message |
+| `Ctrl+Alt+Shift+H` | Scrub PHI | `Ctrl+Alt+Shift+D` | Compare the two views |
+| `Ctrl+Alt+Shift+C` | Check conformance | `Ctrl+Alt+Shift+R` | Pretty-print / reformat |
+| `Ctrl+Alt+Shift+G` | Toggle folding | `Ctrl+Alt+Shift+E` | Enable HL7 highlighting |
+| `Ctrl+Alt+Shift+←` / `→` | Previous / next field | `Ctrl+Alt+Shift+P` | Settings |
+| `Ctrl+Alt+Shift+M` | Send message (MLLP) | `Ctrl+Alt+Shift+L` | Toggle MLLP listener |
+| `Ctrl+Alt+Shift+K` | Copy field path | `Ctrl+Alt+Shift+W` | Copy as rich text |
+
+All combos include **Shift** deliberately — plain `Ctrl+Alt+letter` collides with
+Notepad++ defaults and gets grabbed by other software (graphics drivers, AltGr
+layouts) on some machines.
 
 Any conflicts can be remapped in *Settings → Shortcut Mapper → Plugin commands*.
 
@@ -122,7 +127,7 @@ Always review scrubbed output before sharing it outside a trusted boundary.
 
 ### Conformance profiles
 
-`Check Conformance` (`Ctrl+Alt+C`) validates the active message against rules you define in
+`Check Conformance` (`Ctrl+Alt+Shift+C`) validates the active message against rules you define in
 `PipeHat.profile`, created on first run in the Notepad++ plugin config folder
 (`%AppData%\Notepad++\plugins\config`). Rules are per-interface — the same field can carry
 different limits at different endpoints. Format:
@@ -135,7 +140,7 @@ MSH-9.required=true        # field must be present
 
 Violating fields are squiggle-underlined in the editor and listed in a summary dialog.
 
-You don't have to hand-edit the file: **Settings** (`Ctrl+Alt+P`) opens a rule editor —
+You don't have to hand-edit the file: **Settings** (`Ctrl+Alt+Shift+P`) opens a rule editor —
 a `segment / field / max / allowed values / required` grid with Add / Edit / Remove — that
 reads and writes `PipeHat.profile` and reloads it immediately so the next Check Conformance
 uses your changes. The file format is unchanged, so hand-editing and the GUI interoperate.
@@ -149,10 +154,12 @@ PipeHat can send the active message to an HL7 endpoint and receive inbound messa
 MLLP (HL7's framing for TCP). It ships **disabled** and opens no sockets until you turn it on
 in **Settings → MLLP**.
 
-- **Send Message (MLLP)** (`Ctrl+Alt+M`) — frames the active message, sends it to the configured
+- **Send Message (MLLP)** (`Ctrl+Alt+Shift+M`) — frames the active message, sends it to the configured
   host/port on a background thread, and shows the returned ACK/NAK (`MSA-1` + control id).
-- **Toggle MLLP Listener** (`Ctrl+Alt+L`) — starts/stops an MLLP server. Inbound messages open
-  in new tabs and are auto-acknowledged (`AA`). The menu item shows a checkmark while listening.
+- **Toggle MLLP Listener** (`Ctrl+Alt+Shift+L`) — starts/stops an MLLP server. Each inbound
+  message is auto-acknowledged (`AA`), **saved** to `plugins\config\received\` as
+  `<type>_<controlId>_<time>.hl7`, and opened in a tab. The menu item shows a checkmark while
+  listening. ⚠️ Saved messages may contain PHI — treat that folder accordingly.
 
 The listener **binds to loopback (`127.0.0.1`) only** unless you both tick *Allow binding a
 non-loopback interface* and supply a bind address — and even then a confirmation warns you that
