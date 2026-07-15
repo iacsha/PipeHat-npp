@@ -242,9 +242,14 @@ static void checkAndEnableHL7(ScintillaView& view) {
     bool isHL7 = ScintillaStyler::detectHL7(view.hWnd, view.fnDirect, view.ptrDirect)
                  || currentPathHasHl7Ext();
 
-    if (isHL7 && !view.isHL7) {
+    // Re-apply on EVERY activation of an HL7 buffer, not just the false->true
+    // transition: Notepad++ resets each buffer's lexer to its language ("Normal
+    // Text") on switch, so switching between two HL7 tabs would otherwise leave
+    // all but the last-styled one plain. (Buffer switches aren't hot; re-styling
+    // here is fine — per-keystroke styling stays incremental via SCN_MODIFIED.)
+    if (isHL7) {
         applyHL7Styling(view);
-    } else if (!isHL7 && view.isHL7) {
+    } else if (view.isHL7) {
         view.isHL7 = false;
     }
 }
