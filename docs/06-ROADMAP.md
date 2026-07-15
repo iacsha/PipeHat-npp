@@ -98,10 +98,10 @@ one connection serviced at a time; no TLS (MLLP/S) — flagged as cleartext.
 
 | ID | Item | Priority | Notes |
 |----|------|----------|-------|
-| M6 | Anonymization is deterministic (seed-0, dead seed path) + no referential integrity | P1 | Hash each original value to seed its fake; cache original→fake so the same input yields the same output across the message. Restores linkage for usable test data. |
+| M6 | ✅ **done** — fakes are now deterministic + referentially consistent | P1 | `generateFake` seeds its RNG from a hash of the original value, so the same input always yields the same fake (linkage preserved across the message). Statelessly deterministic — no cache needed. Standalone-tested (6/6). |
 | M7 | Full re-lex on every keystroke | P1 | Style only the modified line range from `SCN_MODIFIED`/`SCN_STYLENEEDED`; unusable on multi-MB logs until fixed. |
-| M8 | PHI map coverage gaps vs HIPAA Safe Harbor | P1 | Missing: all date elements except year (MSH-7, EVN, PV1-44/45, OBR-7, OBX-14), age > 89, email/IP fields, ROL/AIG/AIP provider segments. |
-| — | Anonymize-mode coverage check | P1 | Residual scan can't run in anonymize mode (fake data is identifier-shaped). Substitute: verify every PHI-mapped field for a segment was actually replaced (structural coverage), warn on any miss. |
+| M8 | ⚙️ **mostly done** — date + provider coverage; MSH-7 added | P1 | Safe Harbor date elements (MSH-7, EVN, PV1-44/45, OBR-7/8/14, OBX-14, DG1-5, PR1-5, SCH-11) and provider segments (ROL/AIP/AIG/AIL/PRD/CTD/PV1-52) mapped; residual scan flags email/IPv4. Fake DOBs keep age ≤ 89. Remaining: explicit age fields aren't standard-mapped (no fixed HL7 age field). |
+| — | ✅ **done** — anonymize-mode coverage check | P1 | After scrubbing, an independent raw-split pass verifies every PHI-mapped non-empty field was actually replaced; a mismatch with the tokenizer warns (fail-closed). Fills the gap where the residual scan can't run on identifier-shaped fakes. |
 | C5-ui | Disk/backup residue warning | P2 | Warn that the on-disk original + Notepad++ `backup\` snapshots may retain pre-scrub PHI. |
 | L9 | Real `.hl7` / langtype activation | P2 | Currently MSH-first-line only; About text now honest, but extension trigger still absent. |
 | L11 | Tree navigation off-by-one | P2 | `SCI_GOTOLINE` is 0-based; segment nodes store `li+1`. |

@@ -8,6 +8,8 @@
 #include <fstream>
 #include <iterator>
 #include <unordered_map>
+#include <set>
+#include <utility>
 #include "npp/PluginInterface.h"
 #include "PluginDefs.h"
 #include "HL7Lexer.h"
@@ -304,7 +306,10 @@ static void cmdScrubPHI() {
     // could not produce a replacement for — those may still contain PHI, so the scrub
     // must warn rather than report clean (fail-closed).
     int skipped = 0;
-    auto addReplacement = [&](int lineStart, const wchar_t* wline, const HL7Token& tok,
+    // Covered (line, fieldIdx) pairs — every PHI field we successfully queued for
+    // replacement. Used by the anonymize-mode coverage check below.
+    std::set<std::pair<int, int>> covered;
+    auto addReplacement = [&](int li, int lineStart, const wchar_t* wline, const HL7Token& tok,
                                const std::wstring& segId, int fieldIdx) {
         int prefixUtf8Len = WideCharToMultiByte(CP_UTF8, 0, wline, tok.startPos, nullptr, 0, nullptr, nullptr);
         int tokenUtf8Len = WideCharToMultiByte(CP_UTF8, 0, wline + tok.startPos, tok.length, nullptr, 0, nullptr, nullptr);
@@ -329,6 +334,7 @@ static void cmdScrubPHI() {
         rep.replacement.assign(textUtf8Len, '\0');
         WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.length(), &rep.replacement[0], textUtf8Len, nullptr, nullptr);
 
+        covered.insert({ li, fieldIdx });
         replacements.push_back(rep);
     };
 
@@ -364,8 +370,42 @@ static void cmdScrubPHI() {
                 }
 
                 if (scrub) {
-                    addReplacement(lineStart, wl, tok, segId, fieldIdx);
+                    addReplacement(li, lineStart, wl, tok, segId, fieldIdx);
                 }
+            }
+        }
+    }
+
+    // Anonymize-mode coverage check: the residual identifier scan can't run when
+    // fakes are identifier-shaped, so instead verify structural coverage. Walk each
+    // segment with an INDEPENDENT raw split (not the tokenizer) and confirm every
+    // PHI-mapped, non-empty field was actually queued for replacement. A miss means
+    // the tokenizer and this splitter disagree — a possible silent PHI leak — so the
+    // scrub must warn rather than report clean.
+    int coverageMisses = 0;
+    {
+        wchar_t fieldSep = lexer.delimiters().fieldSep;
+        for (int li = 0; li < lineCount; li++) {
+            std::wstring wl = getLineW(fn, ptr, li);
+            if (wl.size() < 3) continue;
+            std::wstring segId = lexer.extractSegmentID(wl.c_str(), (int)wl.size());
+            if (segId.empty()) continue;
+            bool isMSH = (segId == L"MSH");
+            bool isZ = (segId[0] == L'Z');
+
+            size_t pos = 0; int k = 0;
+            while (pos <= wl.size()) {
+                size_t sep = wl.find(fieldSep, pos);
+                size_t end = (sep == std::wstring::npos) ? wl.size() : sep;
+                if (k >= 1) {
+                    int fieldIdx = isMSH ? (k + 1) : k;  // MSH value after 1st sep is MSH-2
+                    bool nonEmpty = (end > pos);
+                    bool shouldScrub = isZ || g_phiScrubber.isPHI(segId, fieldIdx);
+                    if (nonEmpty && shouldScrub && !covered.count({ li, fieldIdx }))
+                        coverageMisses++;
+                }
+                if (sep == std::wstring::npos) break;
+                pos = sep + 1; k++;
             }
         }
     }
@@ -395,13 +435,14 @@ static void cmdScrubPHI() {
 
     // Fail-closed reporting: residual scan runs in removal mode only (fake data in
     // anonymize mode is intentionally identifier-shaped and would false-positive).
+    // The coverage check is the anonymize-mode substitute for the residual scan.
     int residual = anonymize ? 0 : scanResidualPII(fn, ptr);
 
-    if (skipped == 0 && residual == 0) {
+    if (skipped == 0 && residual == 0 && coverageMisses == 0) {
         wchar_t msg[256];
         swprintf_s(msg,
             L"Scrubbed %d PHI field(s) using %s.\r\n\r\n"
-            L"No unprocessed fields or residual identifier patterns detected.",
+            L"No unprocessed fields, coverage gaps, or residual identifier patterns detected.",
             count, method);
         MessageBoxW(g_nppData._nppHandle, msg, L"PHI Scrub Complete", MB_OK | MB_ICONINFORMATION);
     } else {
@@ -421,6 +462,12 @@ static void cmdScrubPHI() {
             swprintf_s(buf,
                 L"\x26A0 %d residual identifier pattern(s) (SSN / long digit runs) remain in the text.\r\n",
                 residual);
+            warn += buf;
+        }
+        if (coverageMisses > 0) {
+            swprintf_s(buf,
+                L"\x26A0 %d PHI-mapped field(s) were present but not replaced (parser/coverage gap).\r\n",
+                coverageMisses);
             warn += buf;
         }
 

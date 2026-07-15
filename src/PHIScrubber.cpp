@@ -151,6 +151,13 @@ static std::wstring fakeMsgId() {
 std::wstring PHIScrubber::generateFake(const std::wstring& segmentId, int fieldIdx, const std::wstring& original) const {
     const wchar_t* label = getLabel(segmentId, fieldIdx);
 
+    // M6: seed the generator deterministically from the original value so the same
+    // input always yields the same fake — referential integrity across the whole
+    // message (a patient name in PID-5 and the same name in NK1 map identically),
+    // which is what makes anonymized output usable as linked test data. Empty seed
+    // is guarded inside fakeInit. This replaces the old dead seed-0 path.
+    fakeInit(original);
+
     if (wcscmp(label, L"[NAME]") == 0)      return fakeName();
     if (wcscmp(label, L"[ID]") == 0)        return fakeID(8);
     if (wcscmp(label, L"[SSN]") == 0)       return fakeSSN();
@@ -283,6 +290,7 @@ void PHIScrubber::initFieldMap() {
     // ── M8: HIPAA Safe Harbor — individual-related date/time elements ──
     // Safe Harbor requires removing all date elements (except year) tied to an
     // individual: admission, discharge, service, procedure, diagnosis, death, etc.
+    m_fields.push_back({L"MSH", 7,  L"[DATE]",        L"Message Date/Time"});
     m_fields.push_back({L"EVN", 2,  L"[DATE]",        L"Recorded Date/Time"});
     m_fields.push_back({L"EVN", 6,  L"[DATE]",        L"Event Occurred"});
     m_fields.push_back({L"PV1", 44, L"[DATE]",        L"Admit Date/Time"});
