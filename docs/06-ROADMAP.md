@@ -185,16 +185,13 @@ Protocol (MLLP) framing (`<VT>` 0x0B … message … `<FS>` 0x1C `<CR>` 0x0D):
 - **Copy field path** ✅ **done** — Copy Field Path (Ctrl+Alt+K) copies the HL7 path at the caret
   (`PID-5.1.2`, component/subcomponent-aware, MSH off-by-one honored), matching Mirth/BridgeLink
   references; transient calltip confirms. (Right-click context-menu entry still a possible nicety.)
-- **Copy as rich text (RTF/HTML)** 💡 — copy the message *with its syntax colors* so it pastes into
-  Word/Outlook formatted. Scintilla's `Ctrl+C` is plain-text only (colors are a render layer), and
-  the NppExport plugin is the current workaround; a native HL7-aware "Copy as rich text" would remove
-  that dependency (serialize the style bytes + palette to RTF and put `CF_RTF` / `CF_HTML` on the clipboard).
+- **Copy as rich text (RTF)** ✅ **done** — Copy as Rich Text (Ctrl+Alt+W) serializes the colored
+  tokens to RTF and puts `CF_RTF` (+ plain `CF_UNICODETEXT`) on the clipboard, so pasting into
+  Word/Outlook keeps the syntax colors and alternating field shading. No NppExport dependency.
 - **Data-driven segment/PHI tables** — generate from HAPI/nHapi metadata instead of the hand-curated maps (closes M8 by construction).
 - **Component/subcomponent tree depth** — expand fields into components in the tree (currently field-level only).
-- **HL7Soup-style color coding** 💡 — richer syntax palette with **alternating field-value colors**
-  so field boundaries pop, plus an optional current-field highlight on the caret. The styling
-  layer (`ScintillaStyler` + `SCE_HL7_*` slots) already exists; this is a palette + per-field-index
-  parity change, no new architecture.
+- **HL7Soup-style color coding** ✅ **done** — richer palette with alternating field-value shading
+  (v1.3.x) *and* a current-field highlight that boxes the field under the caret on caret move.
 - **MLLP / event log** 💡 — a log of MLLP activity (listener started/stopped, inbound message
   received + its control id and ACK code, outbound send + ACK/NAK result, connection errors) and
   other applicable events (scrub run + residual-scan result, conformance/validation run counts).

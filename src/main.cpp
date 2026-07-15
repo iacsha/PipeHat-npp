@@ -76,7 +76,7 @@ static bool g_treeIntent = false;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[15];
+static FuncItem g_funcItems[16];
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -92,6 +92,7 @@ static ShortcutKey g_skSettings;
 static ShortcutKey g_skMllpSend;
 static ShortcutKey g_skMllpListen;
 static ShortcutKey g_skCopyPath;
+static ShortcutKey g_skCopyRtf;
 
 // ── Helpers ──
 static HWND getCurrentScintilla() {
@@ -1289,6 +1290,117 @@ static void cmdCopyFieldPath() {
     view.fnDirect(view.ptrDirect, SCI_CALLTIPSHOW, pos, (sptr_t)tip.c_str());
 }
 
+// ── Copy as rich text (RTF) ──
+// Serialize the message with its syntax colors to RTF so it pastes into Word /
+// Outlook formatted. Scintilla's own copy is plain-text only; this removes the
+// need for the NppExport plugin.
+static std::string buildRtf(SciFnDirect fn, sptr_t ptr) {
+    HL7Lexer lexer;
+    int lineCount = (int)fn(ptr, SCI_GETLINECOUNT, 0, 0);
+    for (int li = 0; li < lineCount; li++) {
+        std::wstring wl = getLineW(fn, ptr, li);
+        if (lexer.extractSegmentID(wl.c_str(), (int)wl.size()) == L"MSH") {
+            lexer.parseMSH(wl.c_str(), (int)wl.size()); break;
+        }
+    }
+
+    // Color table mirrors the editor scheme (indices are 1-based in RTF).
+    std::string rtf =
+        "{\\rtf1\\ansi\\deff0"
+        "{\\fonttbl{\\f0\\fmodern Consolas;}}"
+        "{\\colortbl;"
+        "\\red0\\green0\\blue192;"      // 1 segment id (blue)
+        "\\red200\\green102\\blue20;"   // 2 field separator (orange)
+        "\\red136\\green136\\blue136;"  // 3 component/rep/sub separators (gray)
+        "\\red32\\green32\\blue32;"     // 4 field value (dark)
+        "\\red0\\green136\\blue136;"    // 5 escape sequence (teal)
+        "\\red230\\green240\\blue246;"  // 6 alternate field background (light)
+        "}"
+        "\\f0\\fs20 ";
+
+    auto emit = [&](const wchar_t* s, int n) {
+        for (int i = 0; i < n; i++) {
+            wchar_t c = s[i];
+            if (c == L'\\' || c == L'{' || c == L'}') { rtf.push_back('\\'); rtf.push_back((char)c); }
+            else if (c == L'\t') { rtf += "\\tab "; }
+            else if (c >= 32 && c < 128) { rtf.push_back((char)c); }
+            else if (c >= 128) { rtf += "\\u" + std::to_string((int)(unsigned short)c) + "?"; }
+        }
+    };
+
+    for (int li = 0; li < lineCount; li++) {
+        std::wstring wl = getLineW(fn, ptr, li);
+        while (!wl.empty() && (wl.back() == L'\r' || wl.back() == L'\n')) wl.pop_back();
+        if (!wl.empty()) {
+            std::vector<HL7Token> tokens;
+            lexer.tokenize(wl.c_str(), (int)wl.size(), tokens);
+            int fieldIdx = 0;
+            for (const auto& tok : tokens) {
+                int cf = 4; bool alt = false, bold = false;
+                switch (tok.type) {
+                    case HL7TokenType::SEGMENT_ID:    cf = 1; bold = true; break;
+                    case HL7TokenType::FIELD_SEP:     cf = 2; fieldIdx++; break;
+                    case HL7TokenType::COMPONENT_SEP:
+                    case HL7TokenType::REPEAT_SEP:
+                    case HL7TokenType::SUBCOMP_SEP:   cf = 3; break;
+                    case HL7TokenType::ESCAPE_SEQ:    cf = 5; bold = true; break;
+                    case HL7TokenType::FIELD_VALUE:   cf = 4; alt = ((fieldIdx & 1) == 0); break;
+                }
+                rtf += "\\cf" + std::to_string(cf);
+                if (bold) rtf += "\\b";
+                if (alt) rtf += "\\highlight6";
+                rtf += " ";
+                emit(wl.c_str() + tok.startPos, tok.length);
+                if (bold) rtf += "\\b0";
+                if (alt) rtf += "\\highlight0";
+            }
+        }
+        rtf += "\\par\n";
+    }
+    rtf += "}";
+    return rtf;
+}
+
+static void cmdCopyRichText() {
+    ScintillaView& view = getCurrentView();
+    if (!view.isHL7 || !view.fnDirect) {
+        MessageBoxW(g_nppData._nppHandle, L"No HL7 document is currently active.",
+                    L"Copy as Rich Text", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    SciFnDirect fn = view.fnDirect;
+    sptr_t ptr = view.ptrDirect;
+
+    std::string rtf = buildRtf(fn, ptr);
+
+    int len = (int)fn(ptr, SCI_GETLENGTH, 0, 0);
+    std::string u8(static_cast<size_t>(len) + 1, '\0');
+    fn(ptr, SCI_GETTEXT, len + 1, (sptr_t)&u8[0]);
+    u8.resize(len);
+    std::wstring wtext = utf8ToW(u8);
+
+    UINT cfRtf = RegisterClipboardFormatW(L"Rich Text Format");
+    if (OpenClipboard(g_nppData._nppHandle)) {
+        EmptyClipboard();
+        HGLOBAL hr = GlobalAlloc(GMEM_MOVEABLE, rtf.size() + 1);
+        if (hr) {
+            void* p = GlobalLock(hr);
+            if (p) { memcpy(p, rtf.c_str(), rtf.size() + 1); GlobalUnlock(hr); SetClipboardData(cfRtf, hr); }
+        }
+        size_t wb = (wtext.size() + 1) * sizeof(wchar_t);
+        HGLOBAL hu = GlobalAlloc(GMEM_MOVEABLE, wb);
+        if (hu) {
+            void* p = GlobalLock(hu);
+            if (p) { memcpy(p, wtext.c_str(), wb); GlobalUnlock(hu); SetClipboardData(CF_UNICODETEXT, hu); }
+        }
+        CloseClipboard();
+    }
+
+    int pos = (int)fn(ptr, SCI_GETCURRENTPOS, 0, 0);
+    const char* tip = "Copied as rich text - paste into Word / Outlook to keep colors";
+    fn(ptr, SCI_CALLTIPSHOW, pos, (sptr_t)tip);
+}
+
 // Subtly box the field the caret is in, updated as the caret moves. Reuses the
 // caret→field analysis; the highlight lives on its own indicator so it coexists
 // with conformance/validation squiggles and the compare-diff highlight.
@@ -1432,6 +1544,7 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skMllpSend   = { true, true, false, 'M' };            // Ctrl+Alt+M  — MLLP send message
     g_skMllpListen = { true, true, false, 'L' };            // Ctrl+Alt+L  — MLLP listener toggle
     g_skCopyPath   = { true, true, false, 'K' };            // Ctrl+Alt+K  — copy field path
+    g_skCopyRtf    = { true, true, false, 'W' };            // Ctrl+Alt+W  — copy as rich text
 
     g_nbFuncItems = 0;
 
@@ -1532,6 +1645,13 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_funcItems[g_nbFuncItems]._pShKey = &g_skCopyPath;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Copy as Rich Text");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdCopyRichText;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skCopyRtf;
     g_nbFuncItems++;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"About PipeHat");
