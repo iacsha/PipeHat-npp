@@ -197,13 +197,12 @@ Protocol (MLLP) framing (`<VT>` 0x0B … message … `<FS>` 0x1C `<CR>` 0x0D):
   outbound send + ACK/NAK/connect result, and scrub/conformance/validation run metadata. PHI-aware:
   metadata only (counts, control ids, host:port, result codes) — never field values or bodies.
   (A dockable live log panel remains a possible nicety.)
-- **Auto-update / update prompt** 💡 — check GitHub Releases for a newer PipeHat and prompt the
-  user (or auto-download the DLL). Options: a lightweight "check on startup / menu: Check for
-  Updates" that hits the GitHub Releases API, compares against `HL7_PLUGIN_VERSION`, and links to
-  the release; or full auto-download + swap (harder — a loaded DLL can't overwrite itself, so it
-  needs a helper/updater step on next restart). Notepad++'s built-in **PluginAdmin** also offers
-  update management if PipeHat is ever listed in the official `nppPluginList`, which would be the
-  lowest-maintenance path. Opt-in, and no telemetry beyond the version check.
+- **Auto-update / update prompt** ✅ **done (check)** — Check for Updates (menu) queries the GitHub
+  Releases API (`UpdateCheck.{h,cpp}`, WinHTTP, off the UI thread), compares the latest tag against
+  `HL7_PLUGIN_VERSION`, and either links to the release or reports "up to date". User-initiated only —
+  never automatic, no telemetry. Verified against the live API. Still open: auto-*download*+swap
+  (a loaded DLL can't overwrite itself — needs a helper/restart step), an opt-in check-on-startup,
+  and listing in the official `nppPluginList` for PluginAdmin management.
 
 ---
 

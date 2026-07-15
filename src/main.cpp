@@ -25,6 +25,7 @@
 #include "MllpConfig.h"
 #include "MllpProtocol.h"
 #include "MllpTransport.h"
+#include "UpdateCheck.h"
 #include <thread>
 
 // Scintilla indicator slots for squiggles (0-7 are reserved for lexers).
@@ -37,6 +38,7 @@
 // UI-thread window (buffer creation and dialogs must run on the UI thread).
 #define WM_MLLP_RECEIVED   (WM_APP + 1)  // lParam = new std::string* (inbound bytes)
 #define WM_MLLP_ACK_RESULT (WM_APP + 2)  // lParam = new mllpnet::SendResult*
+#define WM_UPDATE_RESULT   (WM_APP + 3)  // lParam = new updatecheck::Result*
 
 // ── Global state ──
 static NppData g_nppData;
@@ -103,6 +105,17 @@ static void cmdOpenEventLog() {
     SendMessage(g_nppData._nppHandle, NPPM_DOOPEN, 0, (LPARAM)path.c_str());
 }
 
+// User-initiated GitHub release check (never automatic). Runs on a worker
+// thread; the result is marshaled to the hidden window for the dialog.
+static void cmdCheckUpdates() {
+    HWND target = g_hMllpWnd;
+    logEvent(L"UPDATE", L"Update check requested");
+    std::thread([target]() {
+        updatecheck::Result r = updatecheck::fetchLatestTag("iacsha", "PipeHat-npp");
+        if (target) PostMessageW(target, WM_UPDATE_RESULT, 0, (LPARAM)new updatecheck::Result(r));
+    }).detach();
+}
+
 // Tracks whether the user wants the tree panel shown. The panel only actually
 // appears when this is true AND the active buffer is HL7 — so it never auto-loads
 // on startup and closes itself when the HL7 message is closed.
@@ -110,7 +123,7 @@ static bool g_treeIntent = false;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[17];
+static FuncItem g_funcItems[18];
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -645,6 +658,22 @@ static void updateListenerCheck() {
                 (WPARAM)cmdId, (LPARAM)(g_listener.running() ? TRUE : FALSE));
 }
 
+// Parse "v1.3.0" / "1.3.0" into three ints (skips a leading non-digit like 'v').
+static void parseVer(const std::wstring& v, int& a, int& b, int& c) {
+    a = b = c = 0;
+    const wchar_t* s = v.c_str();
+    while (*s && !iswdigit(*s)) ++s;
+    swscanf_s(s, L"%d.%d.%d", &a, &b, &c);
+}
+static bool isNewerVersion(const std::wstring& latest, const std::wstring& cur) {
+    int a1, b1, c1, a2, b2, c2;
+    parseVer(latest, a1, b1, c1);
+    parseVer(cur, a2, b2, c2);
+    if (a1 != a2) return a1 > a2;
+    if (b1 != b2) return b1 > b2;
+    return c1 > c2;
+}
+
 // Hidden message-only window: runs on the UI thread so inbound messages and ACK
 // results posted from worker/listener threads are handled where it's safe to
 // touch Notepad++.
@@ -711,6 +740,33 @@ static LRESULT CALLBACK mllpWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                                  : (L"ACK " + utf8ToW(mllp::parseAck(r->ack).code));
                 logEvent(L"MLLP", L"Send result: " + res);
                 delete r;
+            }
+            return 0;
+        }
+        case WM_UPDATE_RESULT: {
+            updatecheck::Result* ur = (updatecheck::Result*)l;
+            if (ur) {
+                const wchar_t* url = L"https://github.com/iacsha/PipeHat-npp/releases";
+                std::wstring cur = HL7_PLUGIN_VERSION;
+                if (!ur->ok) {
+                    MessageBoxW(g_nppData._nppHandle,
+                        (L"Could not check for updates:\r\n" + utf8ToW(ur->error)).c_str(),
+                        L"PipeHat \x2014 Check for Updates", MB_OK | MB_ICONWARNING);
+                } else {
+                    std::wstring latest = utf8ToW(ur->tag);
+                    if (isNewerVersion(latest, cur)) {
+                        int yn = MessageBoxW(g_nppData._nppHandle,
+                            (L"PipeHat " + latest + L" is available (you have v" + cur +
+                             L").\r\n\r\nOpen the releases page?").c_str(),
+                            L"PipeHat \x2014 Update Available", MB_YESNO | MB_ICONINFORMATION);
+                        if (yn == IDYES) ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
+                    } else {
+                        MessageBoxW(g_nppData._nppHandle,
+                            (L"You're up to date (v" + cur + L").").c_str(),
+                            L"PipeHat \x2014 Check for Updates", MB_OK | MB_ICONINFORMATION);
+                    }
+                }
+                delete ur;
             }
             return 0;
         }
@@ -1725,6 +1781,12 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Open Event Log");
     g_funcItems[g_nbFuncItems]._pFunc = cmdOpenEventLog;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Check for Updates");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdCheckUpdates;
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_nbFuncItems++;

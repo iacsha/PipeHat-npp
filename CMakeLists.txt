@@ -17,6 +17,7 @@ add_library(PipeHat SHARED
     src/PHIScrubber.cpp
     src/SettingsDialog.cpp
     src/MllpTransport.cpp
+    src/UpdateCheck.cpp
     src/resource.rc
 )
 
@@ -26,7 +27,7 @@ target_include_directories(PipeHat PRIVATE
 )
 
 target_link_libraries(PipeHat PRIVATE
-    user32 gdi32 comctl32 comdlg32 ws2_32
+    user32 gdi32 comctl32 comdlg32 ws2_32 winhttp shell32
 )
 
 set_target_properties(PipeHat PROPERTIES
