@@ -28,6 +28,8 @@ std::wstring      g_path;
 int               g_editIndex = -1;   // -1 = Add, >=0 = edit that row
 Rule              g_editResult;        // handed back from the rule editor
 MllpConfig*       g_cfg = nullptr;     // MLLP settings being edited (not owned)
+std::wstring      g_seedSeg;           // "add rule from field": pre-seed the rule editor
+int               g_seedField = 0;
 
 // ── small text helpers ──
 std::wstring utf8ToW(const std::string& s) {
@@ -208,8 +210,12 @@ INT_PTR CALLBACK ruleProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM) {
     switch (msg) {
         case WM_INITDIALOG: {
             Rule r;
-            if (g_editIndex >= 0 && g_editIndex < (int)g_rules.size())
+            if (g_editIndex >= 0 && g_editIndex < (int)g_rules.size()) {
                 r = g_rules[g_editIndex];
+            } else if (!g_seedSeg.empty() && g_seedField > 0) {
+                r.seg = g_seedSeg; r.field = g_seedField;   // seeded from current field
+                g_seedSeg.clear(); g_seedField = 0;         // consume once
+            }
             SetDlgItemTextW(hDlg, IDC_RULE_SEG, r.seg.c_str());
             if (r.field > 0)
                 SetDlgItemTextW(hDlg, IDC_RULE_FIELD, std::to_wstring(r.field).c_str());
@@ -306,6 +312,9 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
             loadRules(g_path);
             populateList(hList);
             populateMllp(hDlg);
+            // "Add rule from current field": jump straight into the rule editor.
+            if (!g_seedSeg.empty() && g_seedField > 0)
+                PostMessageW(hDlg, WM_COMMAND, MAKEWPARAM(IDC_RULE_ADD, BN_CLICKED), 0);
             return TRUE;
         }
         case WM_NOTIFY: {
@@ -379,9 +388,11 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 namespace SettingsDialog {
 
 bool runModal(HINSTANCE hInst, HWND hParent, const std::wstring& profilePath,
-              MllpConfig& cfg) {
+              MllpConfig& cfg, const std::wstring& seedSeg, int seedField) {
     g_path = profilePath;
     g_cfg = &cfg;
+    g_seedSeg = seedSeg;
+    g_seedField = seedField;
 
     INITCOMMONCONTROLSEX icc;
     icc.dwSize = sizeof(icc);
@@ -390,6 +401,7 @@ bool runModal(HINSTANCE hInst, HWND hParent, const std::wstring& profilePath,
 
     INT_PTR r = DialogBoxParamW(hInst, MAKEINTRESOURCEW(IDD_SETTINGS), hParent, settingsProc, 0);
     g_cfg = nullptr;
+    g_seedSeg.clear(); g_seedField = 0;
     return (r == IDOK);
 }
 

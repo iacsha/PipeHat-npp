@@ -123,7 +123,7 @@ static bool g_treeIntent = false;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[18];
+static FuncItem g_funcItems[19];
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -1415,6 +1415,49 @@ static void cmdCopyFieldPath() {
     view.fnDirect(view.ptrDirect, SCI_CALLTIPSHOW, pos, (sptr_t)tip.c_str());
 }
 
+// Seed a conformance rule from the field at the caret: opens Settings straight
+// into the rule editor pre-filled with that segment/field (a GUI nicety over
+// hand-adding rules).
+static void cmdAddRuleFromField() {
+    ScintillaView& view = getCurrentView();
+    if (!view.isHL7 || !view.fnDirect) {
+        MessageBoxW(g_nppData._nppHandle, L"No HL7 document is currently active.",
+                    L"Add Rule from Field", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    int pos = (int)view.fnDirect(view.ptrDirect, SCI_GETCURRENTPOS, 0, 0);
+    CaretField cf = analyzeCaretField(view.fnDirect, view.ptrDirect, pos);
+    size_t dash = cf.ok ? cf.path.find(L'-') : std::wstring::npos;
+    if (!cf.ok || dash == std::wstring::npos) {
+        MessageBoxW(g_nppData._nppHandle,
+            L"Place the caret inside a field (not the segment id) first.",
+            L"Add Rule from Field", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    std::wstring seg = cf.path.substr(0, dash);
+    std::wstring rest = cf.path.substr(dash + 1);
+    size_t dot = rest.find(L'.');
+    int fieldNo = _wtoi((dot == std::wstring::npos ? rest : rest.substr(0, dot)).c_str());
+    if (seg.empty() || fieldNo <= 0) return;
+
+    wchar_t cfgDir[MAX_PATH]; cfgDir[0] = 0;
+    SendMessage(g_nppData._nppHandle, NPPM_GETPLUGINSCONFIGDIR, MAX_PATH, (LPARAM)cfgDir);
+    if (cfgDir[0] == 0) return;
+    std::wstring path = std::wstring(cfgDir) + L"\\PipeHat.profile";
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        std::string bytes = wToUtf8(ConformanceProfile::defaultFileText());
+        std::ofstream out(path.c_str(), std::ios::binary);
+        if (out) out.write(bytes.data(), (std::streamsize)bytes.size());
+    }
+
+    logEvent(L"CONFORMANCE", L"Add rule from field " + seg + L"-" + std::to_wstring(fieldNo));
+    if (SettingsDialog::runModal((HINSTANCE)g_hModule, g_nppData._nppHandle, path, g_mllp, seg, fieldNo)) {
+        loadProfile();
+        saveMllpConfig();
+        if (!g_mllp.enabled && g_listener.running()) { g_listener.stop(); updateListenerCheck(); }
+    }
+}
+
 // ── Copy as rich text (RTF) ──
 // Serialize the message with its syntax colors to RTF so it pastes into Word /
 // Outlook formatted. Scintilla's own copy is plain-text only; this removes the
@@ -1748,6 +1791,12 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_funcItems[g_nbFuncItems]._pShKey = &g_skSettings;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Add Conformance Rule from Field");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdAddRuleFromField;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
     g_nbFuncItems++;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Send Message (MLLP)");
