@@ -8,7 +8,7 @@ regression-critical subset. Keep both in sync when invariants change.
 
 **PipeHat** — a native C++ Notepad++ plugin (`PipeHat.dll`, x64, Unicode) for HL7 v2.x:
 syntax highlighting, field tooltips, a dockable message tree, and a PHI scrubber. Activates
-when a buffer's first line starts with `MSH`.
+on MSH / FHS / BHS content or a `.hl7` / `.hl7v2` file extension.
 
 Build: `cmake -S . -B build -A x64 && cmake --build build --config Release` →
 `build/Release/PipeHat.dll`. No tests in-repo; a standalone lexer harness lives outside the
@@ -45,25 +45,23 @@ repo. Docs: `docs/05-CODE-REVIEW.md` (defects + fix status), `docs/06-ROADMAP.md
 - `docs/00–04` are the original design brief and are **aspirational** — several classes they
   describe don't exist. Trust the source and `docs/05`/`docs/06`.
 
-## Feature modules (v1.1–v1.2, all header-only)
+## Feature modules (v1.1–v1.2, mostly header-only)
 
 New features are **header-only** modules so they need no CMakeLists edit (sources are listed
 explicitly, not globbed): `TriggerEventDB.h` (MSH-9/EVN-1/MSH-12 decode + `fieldValueAt`),
 `HL7Escape.h` (escape decode), `ConformanceProfile.h` (editable per-interface rules),
-`Validator.h` (structural malform checks), `MessageDiff.h` (segment/field-aware clipboard
-diff). Prefer this pattern for the next feature.
+`Validator.h` (structural malform checks). Prefer this pattern for the next feature.
 
 - **The MSH off-by-one lives in every new field-walk.** `TriggerEventDB::fieldValueAt`, the
-  conformance field splitter (`cmdCheckConformance`), the validator's MSH check, and
-  `MessageDiff` all special-case MSH (`MSH-N` = value after the `N-1`-th separator). Any new
-  field iteration must do the same — and prove it with a standalone test (the pattern: a tiny
-  CMake project in the scratchpad that reuses the MSVC toolchain).
-- Scintilla indicator slots: **18** = conformance squiggles, **19** = validation squiggles
-  (0–7 are reserved for lexers). Pick 20+ for new indicators.
-- Menu commands live in `getFuncsArray` with static `ShortcutKey` objects (Ctrl+Alt+ combos);
-  bump `g_funcItems[N]` when adding one. There are **19** items.
-- Scintilla indicator slots in use: **18** conformance, **19** validation, **20** compare-diff,
-  **21** current-field highlight. Pick 22+ for new ones.
+  conformance field splitter (`cmdCheckConformance`), and the validator's MSH check all
+  special-case MSH (`MSH-N` = value after the `N-1`-th separator). Any new field iteration
+  must do the same.
+- Scintilla indicator slots: **18** = conformance squiggles, **19** = validation squiggles,
+  **20** = compare-diff, **21** = current-field highlight (0–7 are reserved for lexers).
+  Pick 22+ for new indicators.
+- Menu commands live in `getFuncsArray` with static `ShortcutKey` objects (`Ctrl+Alt+Shift+`
+  combos — adding Shift dodges interceptions by other software on some machines);
+  bump `g_funcItems[N]` when adding one. There are **20** items.
 - Non-header-only modules (need CMake wiring): `SettingsDialog.{h,cpp}`, `MllpTransport.{h,cpp}`,
   `UpdateCheck.{h,cpp}` (WinHTTP, isolated). `main.cpp`'s hidden `HWND_MESSAGE` window marshals
   worker/listener results (MLLP receive/ACK, update check) onto the UI thread.
@@ -92,7 +90,7 @@ Three isolated layers: `MllpProtocol.h` (pure framing + ACK, header-only, standa
 
 ## Dialogs / settings GUI (v1.3, NOT header-only)
 
-`SettingsDialog.{h,cpp}` is a modal conformance-rule editor (`Settings`, Ctrl+Alt+P). Unlike the
+`SettingsDialog.{h,cpp}` is a modal conformance-rule editor (`Settings`, Ctrl+Alt+Shift+P). Unlike the
 feature modules it is **not** header-only — it needs `.rc` dialog templates, so it is listed in
 `CMakeLists.txt` and `resource.rc`.
 

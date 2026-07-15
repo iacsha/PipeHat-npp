@@ -46,7 +46,7 @@ check), conformance in hover tooltips + tree problem-list.
 | Escape decoding | `HL7Escape.h` — `\F\ \S\ \T\ \R\ \E\ \.br\ \Xhh\` decoded on hover | ✅ |
 | HL7 version awareness | MSH-12 → version name + era in tooltip/tree (`versionName`) | ✅ |
 | Validation / malform | `Validator.h` + Validate command (Ctrl+Alt+V); advisory squiggles | ✅ |
-| Message compare/diff | `MessageDiff.h` + Compare-with-clipboard (Ctrl+Alt+D); segment/field aligned, new-tab report | ✅ |
+| Message compare/diff | `MessageDiff.h` + Compare Views (Ctrl+Alt+Shift+D); side-by-side view comparison with field-level highlighting in both panes | ✅ |
 | Pretty-print | Segments-per-line reformat (Ctrl+Alt+R) | ✅ |
 | Segment folding | `setFoldLevels` — detail segments fold under their parent | ✅ |
 | Broader activation | MSH/FHS/BHS + BOM/blank-line skip; `.hl7` ext; manual Enable (Ctrl+Alt+E) | ✅ |
@@ -79,7 +79,7 @@ toggle; needs live in-Notepad++ verification before release.
 |-------|------|--------|
 | Protocol | `MllpProtocol.h` (header-only, pure) — MLLP framing, incremental stream de-framer, `buildAck`/`parseAck` | ✅ 20/20 standalone test |
 | Transport | `MllpTransport.{h,cpp}` — Winsock sender (non-blocking connect + timeout) and background-thread listener (accept loop, per-connection service, clean stop); UI-agnostic | ✅ 12/12 loopback test |
-| Integration | `main.cpp` — hidden message-only window marshals inbound → new buffer (UI thread) and ACK results → dialog; menu items **Send Message (MLLP)** (Ctrl+Alt+M) and **Toggle MLLP Listener** (Ctrl+Alt+L); config in `PipeHat.ini` | ⏳ built; manual NPP test pending |
+| Integration | `main.cpp` — hidden message-only window marshals inbound → new buffer (UI thread) and ACK results → dialog; menu items **Send Message (MLLP)** (Ctrl+Alt+Shift+M) and **Toggle MLLP Listener** (Ctrl+Alt+Shift+L); config in `PipeHat.ini` | ⏳ built; manual NPP test pending |
 
 **Security model (implemented):** OFF by default; loopback-only bind unless the
 user opts in *and* supplies a bind address (`MllpConfig::effectiveBindAddr` fails
@@ -103,9 +103,6 @@ one connection serviced at a time; no TLS (MLLP/S) — flagged as cleartext.
 | M8 | ⚙️ **mostly done** — date + provider coverage; MSH-7 added | P1 | Safe Harbor date elements (MSH-7, EVN, PV1-44/45, OBR-7/8/14, OBX-14, DG1-5, PR1-5, SCH-11) and provider segments (ROL/AIP/AIG/AIL/PRD/CTD/PV1-52) mapped; residual scan flags email/IPv4. Fake DOBs keep age ≤ 89. Remaining: explicit age fields aren't standard-mapped (no fixed HL7 age field). |
 | — | ✅ **done** — anonymize-mode coverage check | P1 | After scrubbing, an independent raw-split pass verifies every PHI-mapped non-empty field was actually replaced; a mismatch with the tokenizer warns (fail-closed). Fills the gap where the residual scan can't run on identifier-shaped fakes. |
 | C5-ui | Disk/backup residue warning | P2 | Warn that the on-disk original + Notepad++ `backup\` snapshots may retain pre-scrub PHI. |
-| L9 | Real `.hl7` / langtype activation | P2 | Currently MSH-first-line only; About text now honest, but extension trigger still absent. |
-| L11 | Tree navigation off-by-one | P2 | `SCI_GOTOLINE` is 0-based; segment nodes store `li+1`. |
-| — | Retire unused `ScintillaStyler::sciGetLine` | P2 | The old fixed-buffer wrapper is now unused; remove to prevent reintroduction. |
 
 ---
 

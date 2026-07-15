@@ -9,7 +9,7 @@ HL7 v2.x message viewer: syntax highlighting, hover tooltips with field definiti
 dockable message tree panel, and a PHI scrubber. Windows-only, Unicode, x64. No runtime
 dependencies beyond the Notepad++ / Scintilla host and Win32 common controls. (The CMake
 target, DLL, and repo folder still differ in name — target/DLL are `PipeHat`, the repo dir
-is `hl7-npp-plugin`.)
+is `PipeHat-npp`.)
 
 ## Build
 
@@ -22,8 +22,9 @@ cmake --build build --config Release
 ```
 
 To test in Notepad++, copy `PipeHat.dll` into the Notepad++ `plugins/PipeHat/`
-directory and restart. The plugin activates when the **first line of a buffer starts
-with `MSH`** (there is no file-extension trigger). The dockable panel registration in
+directory and restart. The plugin activates when a buffer starts with `MSH`, `FHS`, or
+`BHS` in the first few content-bearing lines, or when the file has a `.hl7`/`.hl7v2`
+extension (whichever is detected first). The dockable panel registration in
 `MessageTreeView::create` passes `pszModuleName = HL7_PLUGIN_DLL` (`PipeHat.dll`) — this
 **must** match the deployed DLL filename or the dock panel won't register.
 
@@ -42,8 +43,8 @@ holds the global state and wires Notepad++ notifications to the feature modules:
   styling, tree, scrubbing — depends on this tokenizer being correct. It operates on one
   line at a time as `wchar_t`.
 - **`ScintillaStyler`** (`ScintillaStyler.{h,cpp}`) — token→color mapping via Scintilla
-  `SCI_*` messages, plus `SCN_DWELLSTART` hover tooltips and `detectHL7`. Also the wrapper
-  for all Scintilla line reads (`sciGetLine`).
+  `SCI_*` messages, plus `SCN_DWELLSTART` hover tooltips and `detectHL7`. Line reads are
+  routed through `SciUtils.h` (length-safe from `SCI_LINELENGTH`).
 - **`SegmentDB`** (`SegmentDB.{h,cpp}`) — hard-coded in-memory table of segment/field
   definitions (names, data types, required flags) used for tooltips and the tree. Not
   version-aware; single embedded table.
@@ -59,13 +60,13 @@ are listed explicitly): **`TriggerEventDB.h`** (MSH-9/EVN-1 trigger-event + MSH-
 decode, plus `fieldValueAt`), **`HL7Escape.h`** (escape-sequence decode), **`ConformanceProfile.h`**
 (editable per-interface `max`/`values`/`required` rules), **`Validator.h`** (advisory structural
 malform checks). Their commands
-(`cmdCheckConformance`, `cmdValidate`, `cmdCompareClipboard`, `cmdPrettyPrint`, `cmdEnableHL7`,
+(`cmdCheckConformance`, `cmdValidate`, `cmdCompareViews`, `cmdPrettyPrint`, `cmdEnableHL7`,
 field navigation, folding) live in `main.cpp` and are exposed via `getFuncsArray` with
-`Ctrl+Alt+` hotkeys. Conformance squiggles use Scintilla indicator 18, validation 19.
+`Ctrl+Alt+Shift+` hotkeys. Conformance squiggles use Scintilla indicator 18, validation 19.
 
-The v1.3 **settings GUI** (`SettingsDialog.{h,cpp}`, `cmdSettings`, Ctrl+Alt+P) is the one
-recent feature that is **not** header-only — it needs `.rc` dialog templates, so it is listed
-in `CMakeLists.txt`. Dialog resource IDs live in `src/resource.h` (shared by `resource.rc` and
+The v1.3 **settings GUI** (`SettingsDialog.{h,cpp}`, `cmdSettings`, Ctrl+Alt+Shift+P) is one
+of three non-header-only modules (also `MllpTransport.{h,cpp}` and `UpdateCheck.{h,cpp}`) —
+they need `.rc` dialog templates or external libraries, so they are listed in Dialog resource IDs live in `src/resource.h` (shared by `resource.rc` and
 the dialog code): the dockable tree panel keeps dialog ID **1** (empty template, controls built
 in code); `IDD_SETTINGS = 2` and `IDD_RULE = 3` are the modal conformance-rule editor and its
 single-rule sub-dialog. On save the editor regenerates rule lines from the grid (preserving the
@@ -94,8 +95,8 @@ Three layers, each isolated:
   is the **only** place inbound buffers and ACK dialogs are touched: worker/listener threads
   `PostMessage` (`WM_MLLP_RECEIVED` / `WM_MLLP_ACK_RESULT`) and the UI thread does the NPP work.
   Config persists to `PipeHat.ini` (`loadMllpConfig`/`saveMllpConfig`). Menu: **Send Message
-  (MLLP)** Ctrl+Alt+M, **Toggle MLLP Listener** Ctrl+Alt+L (checkmark via
-  `NPPM_SETMENUITEMCHECK`). **19 menu items** total.
+  (MLLP)** Ctrl+Alt+Shift+M, **Toggle MLLP Listener** Ctrl+Alt+Shift+L (checkmark via
+  `NPPM_SETMENUITEMCHECK`). **20 menu items** total.
 
 ### v1.3.x additions (post-MLLP)
 
@@ -105,11 +106,11 @@ Three layers, each isolated:
 - **M7 incremental styling:** `SCN_MODIFIED` re-styles only the edited line range (MSH-line edit →
   full restyle). Fold/detect only on `linesAdded`.
 - **Caret helper `analyzeCaretField`** → HL7 path + field byte range, reused by **Copy Field Path**
-  (Ctrl+Alt+K), **current-field highlight** (indicator **21**, on `SCN_UPDATEUI`+`SC_UPDATE_SELECTION`),
+  (Ctrl+Alt+Shift+K), **current-field highlight** (indicator **21**, on `SCN_UPDATEUI`+`SC_UPDATE_SELECTION`),
   and **Add Conformance Rule from Field** (seeds the rule editor via `SettingsDialog::runModal`'s seed params).
-- **Compare Views** (Ctrl+Alt+D) replaced clipboard compare: diffs the two Notepad++ views, boxing
+- **Compare Views** (Ctrl+Alt+Shift+D) replaced clipboard compare: diffs the two Notepad++ views, boxing
   differing fields in both panes with indicator **20** (`indexDocForDiff`).
-- **Copy as Rich Text** (Ctrl+Alt+W): `buildRtf` → `CF_RTF` clipboard.
+- **Copy as Rich Text** (Ctrl+Alt+Shift+W): `buildRtf` → `CF_RTF` clipboard.
 - **Event log** (`logEvent` → `PipeHat.log`, menu: Open Event Log): PHI-aware metadata only.
 - **Check for Updates** (`UpdateCheck.{h,cpp}`, WinHTTP, isolated + in CMake): user-initiated GitHub
   release check on a worker thread → `WM_UPDATE_RESULT`. Links `winhttp`, `shell32`.
@@ -153,8 +154,7 @@ See `docs/05-CODE-REVIEW.md` for the full defect inventory and fix ordering.
 ## Docs vs. reality
 
 `docs/` (00–04) is the original design brief and is **aspirational** — it describes
-separate `SegmentParser`/`FieldParser`/`ComponentParser` classes, JSON segment tables, a
-`VersionRegistry`, and an indicator/squiggle layer that **do not exist** in the code. The
-shipped implementation is simpler and hand-coded (single `HL7Lexer`, compiled-in `SegmentDB`,
-no validation squiggles, no version tables). Trust the source over docs 00–04; trust
-`docs/05-CODE-REVIEW.md` for current known issues.
+separate `SegmentParser`/`FieldParser`/`ComponentParser` classes, JSON segment tables, and a
+`VersionRegistry` that **do not exist** in the code. The shipped implementation is simpler
+and hand-coded (single `HL7Lexer`, compiled-in `SegmentDB`, no per-version field tables).
+Trust the source over docs 00–04; trust `docs/05-CODE-REVIEW.md` for current known issues.
