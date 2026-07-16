@@ -5,6 +5,7 @@
 #include "SciUtils.h"
 #include "TriggerEventDB.h"
 #include "HL7Escape.h"
+#include "MessageIndex.h"
 #include <string>
 #include <vector>
 #include <cstring>
@@ -178,19 +179,16 @@ void ScintillaStyler::styleRange(int startPos, int endPos) {
     int endLine = (int)sci(SCI_LINEFROMPOSITION, endPos);
 
     HL7Lexer lexer;
-    bool mshFound = false;
 
-    for (int line = 0; line <= sciGetLineCount(); line++) {
-        std::wstring wline = getLineW(m_sciFn, m_sciPtr, line);
-        if (wline.empty()) continue;
-        if (lexer.extractSegmentID(wline.c_str(), (int)wline.size()) == L"MSH") {
-            lexer.parseMSH(wline.c_str(), (int)wline.size());
-            mshFound = true;
-            break;
-        }
-    }
-
-    if (!mshFound) return;
+    // A buffer can hold many messages, each declaring its own delimiters. Colouring a
+    // '!'-separated message with the first message's '|' produces one undifferentiated
+    // field-value run -- the message looks unparsed even though it is perfectly valid.
+    // The index resolves each line to its own message's separators.
+    SciFnDirect fnLocal = m_sciFn;
+    sptr_t ptrLocal = m_sciPtr;
+    hl7::MessageIndex index;
+    index.build(sciGetLineCount(), [fnLocal, ptrLocal](int i) { return getLineW(fnLocal, ptrLocal, i); });
+    if (index.empty()) return;
 
     sciV(SCI_STARTSTYLING, startPos);
 
@@ -202,6 +200,7 @@ void ScintillaStyler::styleRange(int startPos, int endPos) {
 
         std::wstring wline = getLineW(m_sciFn, m_sciPtr, line);
         if (!wline.empty()) {
+            lexer.setDelimiters(index.delimitersFor(line));
             std::vector<HL7Token> tokens;
             lexer.tokenize(wline.c_str(), (int)wline.size(), tokens);
 

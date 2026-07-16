@@ -295,6 +295,17 @@ struct Replacement {
     std::string replacement; // UTF-8 replacement text
 };
 
+// Build the message-boundary map for a document. Every command that walks a buffer
+// line-by-line needs this: a buffer can hold many messages (log/batch files) and each
+// declares its own delimiters, so "parseMSH the first MSH and reuse it for the whole
+// document" mis-parses every message after the first that differs.
+static hl7::MessageIndex buildIndex(SciFnDirect fn, sptr_t ptr) {
+    int lineCount = (int)fn(ptr, SCI_GETLINECOUNT, 0, 0);
+    hl7::MessageIndex idx;
+    idx.build(lineCount, [fn, ptr](int i) { return getLineW(fn, ptr, i); });
+    return idx;
+}
+
 // Independent segment-ID derivation for the anonymize-mode coverage check.
 //
 // This deliberately does NOT call HL7Lexer::extractSegmentID. The coverage check is
@@ -393,15 +404,12 @@ static void cmdScrubPHI() {
 
     int lineCount = (int)fn(ptr, SCI_GETLINECOUNT, 0, 0);
 
-    // First pass: find MSH to set delimiters
-    for (int li = 0; li < lineCount; li++) {
-        std::wstring wl = getLineW(fn, ptr, li);
-        if (wl.empty()) continue;
-        if (lexer.extractSegmentID(wl.c_str(), (int)wl.size()) == L"MSH") {
-            lexer.parseMSH(wl.c_str(), (int)wl.size());
-            break;
-        }
-    }
+    // First pass: map message boundaries and each message's delimiters. Scrubbing a
+    // multi-message log with the FIRST message's separators would shift field indices
+    // on every message that declares different ones -- and a shifted index means the
+    // PHI map is consulted for the wrong field. That is a silent leak, so this pass is
+    // load-bearing for correctness, not just for display.
+    hl7::MessageIndex index = buildIndex(fn, ptr);
 
     // Second pass: collect replacements. `skipped` counts PHI fields we detected but
     // could not produce a replacement for -- those may still contain PHI, so the scrub
@@ -447,6 +455,9 @@ static void cmdScrubPHI() {
         const wchar_t* wl = wlStr.c_str();
         int wlLen = (int)wlStr.size();
 
+        // This line's own message's delimiters, never the first message's.
+        lexer.setDelimiters(index.delimitersFor(li));
+
         std::wstring segId = lexer.extractSegmentID(wl, wlLen);
         if (segId.empty()) continue;
 
@@ -486,12 +497,18 @@ static void cmdScrubPHI() {
     // than report clean.
     int coverageMisses = 0;
     {
-        wchar_t fieldSep = lexer.delimiters().fieldSep;
         for (int li = 0; li < lineCount; li++) {
             std::wstring wl = getLineW(fn, ptr, li);
             if (wl.size() < 3) continue;
             std::wstring segId = rawSegmentID(wl);
             if (segId.empty()) continue;
+
+            // Per-message separator, same as the scrub pass. Splitting a '!'-separated
+            // message on '|' would find one giant field, so every PHI field in it would
+            // read as "not covered" and the check would cry wolf on a correct scrub --
+            // the mirror image of the C6 failure, and just as corrosive: a safety net
+            // that fires constantly gets ignored, then it is not a safety net either.
+            wchar_t fieldSep = index.delimitersFor(li).fieldSep;
             bool isMSH = (segId == L"MSH");
             bool isZ = (segId[0] == L'Z');
 
@@ -1085,16 +1102,7 @@ static void cmdCheckConformance() {
 
     HL7Lexer lexer;
     int lineCount = (int)fn(ptr, SCI_GETLINECOUNT, 0, 0);
-    for (int li = 0; li < lineCount; li++) {
-        std::wstring wl = getLineW(fn, ptr, li);
-        if (wl.empty()) continue;
-        if (lexer.extractSegmentID(wl.c_str(), (int)wl.size()) == L"MSH") {
-            lexer.parseMSH(wl.c_str(), (int)wl.size());
-            break;
-        }
-    }
-    wchar_t fieldSep = lexer.delimiters().fieldSep;
-    wchar_t compSep  = lexer.delimiters().compSep;
+    hl7::MessageIndex index = buildIndex(fn, ptr);
 
     std::wstring report;
     int violations = 0;
@@ -1104,6 +1112,14 @@ static void cmdCheckConformance() {
         std::wstring wlStr = getLineW(fn, ptr, li);
         if (wlStr.size() < 3) continue;
         const wchar_t* wl = wlStr.c_str();
+
+        // Per-message separators. Checking a '!'-separated message against '|' would
+        // split it into one giant field and report bogus max-length violations on
+        // every rule -- noise that trains you to ignore the checker.
+        HL7Delimiters dl = index.delimitersFor(li);
+        wchar_t fieldSep = dl.fieldSep;
+        wchar_t compSep  = dl.compSep;
+        lexer.setDelimiters(dl);
 
         std::wstring segId = lexer.extractSegmentID(wl, (int)wlStr.size());
         if (segId.empty()) continue;
@@ -1214,17 +1230,32 @@ static void cmdValidate() {
     std::vector<std::wstring> lines;
     lines.reserve(lineCount);
 
-    HL7Lexer lexer;
-    for (int li = 0; li < lineCount; li++) {
-        std::wstring wl = getLineW(fn, ptr, li);
-        lines.push_back(wl);
-        if (!wl.empty() && lexer.extractSegmentID(wl.c_str(), (int)wl.size()) == L"MSH")
-            lexer.parseMSH(wl.c_str(), (int)wl.size());
-    }
-    wchar_t fieldSep = lexer.delimiters().fieldSep;
-    wchar_t escSep   = lexer.delimiters().escapeSep;
+    for (int li = 0; li < lineCount; li++)
+        lines.push_back(getLineW(fn, ptr, li));
 
-    std::vector<hl7val::Finding> findings = hl7val::validate(lines, fieldSep, escSep);
+    // This loop used to parseMSH every MSH without breaking, so a multi-message file
+    // was validated end to end using the LAST message's delimiters. Instead, validate
+    // each message on its own: hl7val::validate takes one delimiter pair, and a message
+    // is exactly the scope where one pair is valid. It is also the more meaningful unit
+    // -- "first content line is not MSH" should be asked per message, not per file.
+    hl7::MessageIndex index = buildIndex(fn, ptr);
+    std::vector<hl7val::Finding> findings;
+
+    if (index.empty()) {
+        // No MSH anywhere: validate the whole buffer with defaults so a malformed
+        // document still reports "missing MSH" rather than silently passing.
+        HL7Delimiters d;
+        findings = hl7val::validate(lines, d.fieldSep, d.escapeSep);
+    } else {
+        for (const auto& span : index.spans()) {
+            std::vector<std::wstring> slice(lines.begin() + span.startLine,
+                                            lines.begin() + span.endLine + 1);
+            for (auto& f : hl7val::validate(slice, span.delims.fieldSep, span.delims.escapeSep)) {
+                f.line += span.startLine;   // back to document coordinates
+                findings.push_back(f);
+            }
+        }
+    }
 
     // Configure and clear the validation squiggle (orange, distinct from conformance).
     fn(ptr, SCI_SETINDICATORCURRENT, PIPEHAT_INDIC_VALIDATION, 0);
@@ -1295,19 +1326,18 @@ static std::vector<SegOcc> indexDocForDiff(SciFnDirect fn, sptr_t ptr) {
 
     HL7Lexer lexer;
     int lineCount = (int)fn(ptr, SCI_GETLINECOUNT, 0, 0);
-    for (int li = 0; li < lineCount; li++) {
-        std::wstring wl = getLineW(fn, ptr, li);
-        if (lexer.extractSegmentID(wl.c_str(), (int)wl.size()) == L"MSH") {
-            lexer.parseMSH(wl.c_str(), (int)wl.size());
-            break;
-        }
-    }
-    wchar_t fieldSep = lexer.delimiters().fieldSep;
+    hl7::MessageIndex index = buildIndex(fn, ptr);
 
     std::unordered_map<std::wstring, int> occ;
     for (int li = 0; li < lineCount; li++) {
         std::wstring wl = getLineW(fn, ptr, li);
         if (wl.size() < 3) continue;
+
+        // Per-message separators: two views being compared may use different ones, and
+        // splitting either on the wrong separator makes every field read as different.
+        wchar_t fieldSep = index.delimitersFor(li).fieldSep;
+        lexer.setDelimiters(index.delimitersFor(li));
+
         std::wstring seg = lexer.extractSegmentID(wl.c_str(), (int)wl.size());
         if (seg.empty()) continue;
 
@@ -1449,18 +1479,19 @@ static CaretField analyzeCaretField(SciFnDirect fn, sptr_t ptr, int caretPos) {
     if (!fn) return r;
 
     HL7Lexer lexer;
-    int lineCount = (int)fn(ptr, SCI_GETLINECOUNT, 0, 0);
-    for (int li = 0; li < lineCount; li++) {
-        std::wstring wl = getLineW(fn, ptr, li);
-        if (lexer.extractSegmentID(wl.c_str(), (int)wl.size()) == L"MSH") {
-            lexer.parseMSH(wl.c_str(), (int)wl.size()); break;
-        }
-    }
-    wchar_t fieldSep = lexer.delimiters().fieldSep;
-    wchar_t compSep  = lexer.delimiters().compSep;
-    wchar_t subSep   = lexer.delimiters().subcompSep;
+    hl7::MessageIndex index = buildIndex(fn, ptr);
 
     int line = (int)fn(ptr, SCI_LINEFROMPOSITION, caretPos, 0);
+
+    // Delimiters of the message the caret is actually in. This drives Copy Field Path
+    // and the current-field highlight, so the wrong separator here reports the wrong
+    // HL7 path -- and a path is the thing you paste into a Mirth transformer.
+    HL7Delimiters dl = index.delimitersFor(line);
+    lexer.setDelimiters(dl);
+    wchar_t fieldSep = dl.fieldSep;
+    wchar_t compSep  = dl.compSep;
+    wchar_t subSep   = dl.subcompSep;
+
     int lineStart = (int)fn(ptr, SCI_POSITIONFROMLINE, line, 0);
     std::string u8 = getLineUtf8(fn, ptr, line);
     std::wstring w = utf8ToW(u8);
@@ -1623,12 +1654,7 @@ static void cmdAddRuleFromField() {
 static std::string buildRtf(SciFnDirect fn, sptr_t ptr) {
     HL7Lexer lexer;
     int lineCount = (int)fn(ptr, SCI_GETLINECOUNT, 0, 0);
-    for (int li = 0; li < lineCount; li++) {
-        std::wstring wl = getLineW(fn, ptr, li);
-        if (lexer.extractSegmentID(wl.c_str(), (int)wl.size()) == L"MSH") {
-            lexer.parseMSH(wl.c_str(), (int)wl.size()); break;
-        }
-    }
+    hl7::MessageIndex index = buildIndex(fn, ptr);
 
     // Color table mirrors the editor scheme (indices are 1-based in RTF).
     std::string rtf =
@@ -1658,6 +1684,7 @@ static std::string buildRtf(SciFnDirect fn, sptr_t ptr) {
         std::wstring wl = getLineW(fn, ptr, li);
         while (!wl.empty() && (wl.back() == L'\r' || wl.back() == L'\n')) wl.pop_back();
         if (!wl.empty()) {
+            lexer.setDelimiters(index.delimitersFor(li));   // per-message separators
             std::vector<HL7Token> tokens;
             lexer.tokenize(wl.c_str(), (int)wl.size(), tokens);
             int fieldIdx = 0;
