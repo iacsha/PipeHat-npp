@@ -229,12 +229,14 @@ a cleartext-PHI confirmation. Network settings persist to `PipeHat.ini`.
 
 ## Status
 
-**v2.0.0.** Adds **MLLP send/receive** (HL7 over TCP) behind an off-by-default toggle -- the
-plugin's first network feature -- and fixes a **silent PHI leak** where segments whose IDs
-contain a digit (`PV1`, `NK1`, `GT1`, `IN1`…) were skipped by the scrubber while it still
-reported clean (see the scrubber warning above and `docs/05-CODE-REVIEW.md` C6; pinned by
-`tests/SegmentIDTest.cpp`). Crash-class defects and the fail-open PHI leak from the initial
-review are fixed and build-verified. v1.1 added trigger-event decoding, HIPAA Safe Harbor scrubber coverage,
+**v2.1.0.** Adds **multi-message file support** (each message parsed with its own MSH
+delimiters; tree grouping and Next/Previous Message navigation) and **Replay All Messages**
+(one MLLP frame per message, with MSH-10/MSH-7 refresh). v2.0.0 added **MLLP send/receive**
+(HL7 over TCP) behind an off-by-default toggle -- the plugin's first network feature -- and
+fixed a **silent PHI leak** where segments whose IDs contain a digit (`PV1`, `NK1`, `GT1`,
+`IN1`...) were skipped by the scrubber while it still reported clean (see the scrubber warning
+above and `docs/05-CODE-REVIEW.md` C6; pinned by `tests/SegmentIDTest.cpp`). Crash-class defects
+and the fail-open PHI leak from the initial review are fixed and build-verified. v1.1 added trigger-event decoding, HIPAA Safe Harbor scrubber coverage,
 conformance checking, hotkeys, and smarter panel behavior; v1.2 adds structural validation,
 message compare/diff, escape + HL7-version decoding, pretty-print, folding, and broader
 activation; v1.3 adds the **Settings GUI** for editing conformance rules without hand-editing
