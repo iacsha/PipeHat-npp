@@ -1,7 +1,31 @@
 # PipeHat -- Roadmap
 
-> HL7 v2.x plugin for Notepad++. Status as of 2026-07-14.
-> Companion to `05-CODE-REVIEW.md` (defect inventory) and `01-ARCHITECTURE.md`.
+> HL7 v2.x plugin for Notepad++. Status as of 2026-07-16 (**v2.0.0 released**).
+> Companion to `CHANGELOG.md` (release history), `05-CODE-REVIEW.md` (defect inventory)
+> and `01-ARCHITECTURE.md`.
+
+## What's actually left after v2.0.0
+
+Everything above the line in the sections below is shipped. The remaining work, honestly
+scoped:
+
+| Item | Priority | Notes |
+|------|----------|-------|
+| Live third-party MLLP test | **P0** | Send/receive is verified over loopback in NPP, not yet against a real endpoint (Mirth/BridgeLink). The one claim in the docs that rests on inference rather than a test. |
+| C5-ui -- disk/backup residue warning | P1 | The last unshipped item from the original PHI review: warn that the on-disk original and Notepad++'s `backup\` snapshots may retain pre-scrub PHI. |
+| **Data-driven segment/PHI tables** | **P1** | Generate `SegmentDB`/PHI maps from HAPI/nHapi metadata instead of hand-curating. **C6 is the argument**: nine PHI-bearing segments were unreachable for months because the tables are hand-written and nothing cross-checks them against the spec. This removes the bug class, not the instance, and closes M8 by construction. Pair with a coverage audit -- C6 was found by luck, and we do not currently know what else is missing from the PHI map. |
+| Enhanced-mode ACK (MSH-15/16) | P2 | Parsed but not honored; always application ACK. |
+| Listener concurrency | P2 | Services one connection at a time. |
+| TLS / MLLP-S | P2 | No transport encryption; cleartext is flagged in UI and docs. |
+| Component/subcomponent tree depth | P2 | Tree is field-level only. |
+| Conformance in tooltips + tree problem-list | P2 | Violations currently surface only as squiggles + a report dialog. |
+| Auto-download + swap update | P2 | A loaded DLL can't overwrite itself -- needs a helper/restart step. Opt-in check-on-startup also open. |
+| `nppPluginList` listing | P2 | Would make PipeHat installable via Notepad++'s PluginAdmin. |
+| Dockable live log panel | P2 | Event log is a file today (menu: Open Event Log). |
+
+**Closed as already done** (this doc had drifted from the code): L9 `.hl7` activation
+(`currentPathHasHl7Ext`), L11 tree-nav off-by-one, and retiring the fixed-buffer
+`ScintillaStyler::sciGetLine` -- all verified present/absent in the source on 2026-07-16.
 
 ## Legend
 
@@ -70,16 +94,16 @@ so hand-editing still works and round-trips through the dialog.
 
 ---
 
-## In progress -- MLLP send / receive over TCP (v2.0, unreleased)
+## Shipped -- MLLP send / receive over TCP (v2.0.0)
 
-The plugin's first network feature. Built and integrated behind an off-by-default
-toggle; needs live in-Notepad++ verification before release.
+The plugin's first network feature, behind an off-by-default toggle. Send and receive are
+verified over loopback in Notepad++; a third-party-endpoint test (Mirth) is still outstanding.
 
 | Layer | What | Status |
 |-------|------|--------|
 | Protocol | `MllpProtocol.h` (header-only, pure) -- MLLP framing, incremental stream de-framer, `buildAck`/`parseAck` | ✅ 20/20 standalone test |
 | Transport | `MllpTransport.{h,cpp}` -- Winsock sender (non-blocking connect + timeout) and background-thread listener (accept loop, per-connection service, clean stop); UI-agnostic | ✅ 12/12 loopback test |
-| Integration | `main.cpp` -- hidden message-only window marshals inbound -> new buffer (UI thread) and ACK results -> dialog; menu items **Send Message (MLLP)** (Ctrl+Alt+Shift+M) and **Toggle MLLP Listener** (Ctrl+Alt+Shift+L); config in `PipeHat.ini` | ⏳ built; manual NPP test pending |
+| Integration | `main.cpp` -- hidden message-only window marshals inbound -> new buffer (UI thread) and ACK results -> dialog; menu items **Send Message (MLLP)** (Ctrl+Alt+Shift+M) and **Toggle MLLP Listener** (Ctrl+Alt+Shift+L); config in `PipeHat.ini` | ✅ loopback send/receive verified in NPP |
 
 **Security model (implemented):** OFF by default; loopback-only bind unless the
 user opts in *and* supplies a bind address (`MllpConfig::effectiveBindAddr` fails

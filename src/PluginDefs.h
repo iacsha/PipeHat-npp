@@ -14,7 +14,10 @@
 #define SCE_HL7_FIELD_VALUE_ALT 10  // alternate field shade (every other field)
 
 #define HL7_PLUGIN_NAME L"PipeHat"
-#define HL7_PLUGIN_VERSION L"1.3.0"
+// Keep in sync with the git tag: Check for Updates compares this against the latest
+// GitHub release tag (parseVer skips the leading 'v', so "v2.0.0" matches "2.0.0").
+// A mismatch makes the updater lie in one direction or the other.
+#define HL7_PLUGIN_VERSION L"2.0.0"
 #define HL7_PLUGIN_TAGLINE L"HL7 v2.x for Notepad++"
 #define HL7_PLUGIN_DLL L"PipeHat.dll"
 
