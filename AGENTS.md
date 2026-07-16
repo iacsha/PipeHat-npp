@@ -33,6 +33,14 @@ repo. Docs: `docs/05-CODE-REVIEW.md` (defects + fix status), `docs/06-ROADMAP.md
    possible failure for this tool.
 6. **Scrub empties the undo buffer** (`SCI_EMPTYUNDOBUFFER`) so originals aren't Ctrl+Z
    recoverable. Don't remove it.
+6b. **Segment IDs are `A-Z` then two of `A-Z0-9`. The digits are not optional.** `PV1`, `NK1`,
+   `GT1`, `IN1`, `IN2`, `PD1`, `DG1`, `PR1`, `PV2` hold the heaviest PHI, and `cmdScrubPHI`
+   skips any line whose segment ID is empty. An all-alpha check leaks guarantor SSNs while
+   reporting a clean scrub -- this shipped (`docs/05-CODE-REVIEW.md` C6). Never `iswalpha`/
+   `iswalnum` here (locale-dependent; matches lowercase and accented Unicode). Keep
+   `isSegmentStart` defined via `extractSegmentID`, and keep the scrub coverage check on
+   `rawSegmentID` -- it must **not** call `HL7Lexer`, or it goes blind exactly when it matters.
+   Re-run `tests/SegmentIDTest.cpp` after any lexer or PHI-map change.
 7. **Never crash on malformed input.** Real-world HL7 has custom Z-segments, odd delimiters,
    and dialect quirks. Validation is advisory, never blocking.
 

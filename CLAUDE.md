@@ -39,7 +39,7 @@ holds the global state and wires Notepad++ notifications to the feature modules:
 
 - **`HL7Lexer`** (`HL7Lexer.{h,cpp}`) -- the core parser. Reads delimiters from the MSH
   segment (`parseMSH`) and tokenizes a line into `HL7Token`s (segment id, field/component/
-  repeat/subcomponent separators, escape sequences, field values). Everything downstream —
+  repeat/subcomponent separators, escape sequences, field values). Everything downstream --
   styling, tree, scrubbing -- depends on this tokenizer being correct. It operates on one
   line at a time as `wchar_t`.
 - **`ScintillaStyler`** (`ScintillaStyler.{h,cpp}`) -- token->color mapping via Scintilla
@@ -65,7 +65,7 @@ field navigation, folding) live in `main.cpp` and are exposed via `getFuncsArray
 `Ctrl+Alt+Shift+` hotkeys. Conformance squiggles use Scintilla indicator 18, validation 19.
 
 The v1.3 **settings GUI** (`SettingsDialog.{h,cpp}`, `cmdSettings`, Ctrl+Alt+Shift+P) is one
-of three non-header-only modules (also `MllpTransport.{h,cpp}` and `UpdateCheck.{h,cpp}`) —
+of three non-header-only modules (also `MllpTransport.{h,cpp}` and `UpdateCheck.{h,cpp}`) --
 they need `.rc` dialog templates or external libraries, so they are listed in Dialog resource IDs live in `src/resource.h` (shared by `resource.rc` and
 the dialog code): the dockable tree panel keeps dialog ID **1** (empty template, controls built
 in code); `IDD_SETTINGS = 2` and `IDD_RULE = 3` are the modal conformance-rule editor and its
@@ -148,6 +148,21 @@ is a local reimplementation of the NPP docking structs.
   unscrubbed; `cmdScrubPHI` reports a success count, so a parse gap becomes a silent PHI
   leak. Scrub edits also do not empty the Scintilla undo buffer -- originals are Ctrl+Z
   recoverable unless `SCI_EMPTYUNDOBUFFER` is called.
+- **Segment IDs are `A-Z` then two of `A-Z0-9` -- the digits are not optional.** `PV1`, `NK1`,
+  `GT1`, `IN1`, `IN2`, `PD1`, `DG1`, `PR1`, `PV2` carry the heaviest PHI in a message, and
+  `cmdScrubPHI` skips any line whose segment ID comes back empty (`if (segId.empty()) continue;`).
+  An all-alpha check here silently leaks guarantor SSNs while reporting a clean scrub -- this
+  shipped (see `docs/05-CODE-REVIEW.md` C6). Never use `iswalpha`/`iswalnum` for this: they are
+  locale-dependent and match lowercase and accented Unicode. `isSegmentStart` is deliberately
+  defined in terms of `extractSegmentID` -- keep it that way so the tokenizer and the PHI lookup
+  cannot disagree.
+- **The scrub coverage check must not call into `HL7Lexer`.** It is the independent half of a
+  fail-closed pair; it uses `rawSegmentID` in `main.cpp` and must stay permissive. Routing it
+  through `extractSegmentID` is what made the C6 leak invisible to its own safety net. Any
+  "safety net" sharing a dependency with the thing it audits is decorative.
+- **Run `tests/SegmentIDTest.cpp` after touching the lexer or the PHI map** (build line in the
+  file header). It is standalone -- links only `HL7Lexer.cpp` + `PHIScrubber.cpp`, no Windows
+  deps -- and exits non-zero on failure.
 
 See `docs/05-CODE-REVIEW.md` for the full defect inventory and fix ordering.
 

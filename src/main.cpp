@@ -75,8 +75,8 @@ static void updateListenerCheck();
 
 // ── Event log (PHI-aware) ──
 // Append a timestamped line to PipeHat.log in the config dir. Log ONLY metadata
-// (counts, control ids, host:port, result codes) — never field values or message
-// bodies — so the log never becomes a PHI store.
+// (counts, control ids, host:port, result codes) -- never field values or message
+// bodies -- so the log never becomes a PHI store.
 static void logEvent(const std::wstring& category, const std::wstring& msg) {
     wchar_t cfg[MAX_PATH]; cfg[0] = 0;
     SendMessage(g_nppData._nppHandle, NPPM_GETPLUGINSCONFIGDIR, MAX_PATH, (LPARAM)cfg);
@@ -119,7 +119,7 @@ static void cmdCheckUpdates() {
 }
 
 // Tracks whether the user wants the tree panel shown. The panel only actually
-// appears when this is true AND the active buffer is HL7 — so it never auto-loads
+// appears when this is true AND the active buffer is HL7 -- so it never auto-loads
 // on startup and closes itself when the HL7 message is closed.
 static bool g_treeIntent = false;
 
@@ -226,7 +226,7 @@ static void setFoldLevels(ScintillaView& view) {
     }
 }
 
-// Turn on HL7 mode for a view and paint it — the "pretty text" + tree. Used both
+// Turn on HL7 mode for a view and paint it -- the "pretty text" + tree. Used both
 // by auto-detection and by forced activation (e.g. an MLLP-received buffer, which
 // we know is HL7 regardless of what detection makes of its lone-CR line endings).
 static void applyHL7Styling(ScintillaView& view) {
@@ -236,7 +236,7 @@ static void applyHL7Styling(ScintillaView& view) {
     view.styler.defineStyles();
     view.styler.styleAll();
     // NOTE: SCI_SETLEXER(SCLEX_CONTAINER) was removed in Scintilla 5 (NPP 8.4+),
-    // where it is a silent no-op — container mode never engages there, so our
+    // where it is a silent no-op -- container mode never engages there, so our
     // styling is manual bytes that NPP may wipe when it re-applies the buffer's
     // language. The SCN_PAINTED self-heal below recovers from those wipes. The
     // call is kept for pre-5 Notepad++ where container mode does engage.
@@ -265,7 +265,7 @@ static void checkAndEnableHL7(ScintillaView& view) {
     // transition: Notepad++ resets each buffer's lexer to its language ("Normal
     // Text") on switch, so switching between two HL7 tabs would otherwise leave
     // all but the last-styled one plain. (Buffer switches aren't hot; re-styling
-    // here is fine — per-keystroke styling stays incremental via SCN_MODIFIED.)
+    // here is fine -- per-keystroke styling stays incremental via SCN_MODIFIED.)
     if (isHL7) {
         applyHL7Styling(view);
     } else if (view.isHL7) {
@@ -292,9 +292,28 @@ struct Replacement {
     std::string replacement; // UTF-8 replacement text
 };
 
+// Independent segment-ID derivation for the anonymize-mode coverage check.
+//
+// This deliberately does NOT call HL7Lexer::extractSegmentID. The coverage check is
+// only a safety net if it fails independently of the thing it audits, and sharing that
+// call is precisely what let the digit-bearing-segment bug (NK1/GT1/PV1/IN1...) pass
+// silently: the scrub pass skipped those lines on an empty segment ID and the check
+// skipped them on the same empty segment ID, so a guarantor SSN survived a scrub that
+// reported "no coverage gaps". Keep this permissive -- anything the lexer wrongly
+// rejects must still be audited here.
+static std::wstring rawSegmentID(const std::wstring& line) {
+    size_t i = 0;
+    while (i < line.size() && (line[i] == L' ' || line[i] == L'\t')) i++;
+    if (i + 3 > line.size()) return L"";
+    auto alpha = [](wchar_t c) { return c >= L'A' && c <= L'Z'; };
+    auto alnum = [](wchar_t c) { return (c >= L'A' && c <= L'Z') || (c >= L'0' && c <= L'9'); };
+    if (!alpha(line[i]) || !alnum(line[i + 1]) || !alnum(line[i + 2])) return L"";
+    return line.substr(i, 3);
+}
+
 // Fail-closed safety net: after a "remove" scrub, count high-confidence identifier
 // patterns still present in the buffer. Any hit means a real identifier slipped past
-// the field map or the parser — the scrub must NOT be reported as clean. Not used for
+// the field map or the parser -- the scrub must NOT be reported as clean. Not used for
 // "anonymize" mode, where fake data is intentionally identifier-shaped.
 static int scanResidualPII(SciFnDirect fn, sptr_t ptr) {
     static const std::wregex ssn(L"[0-9]{3}-[0-9]{2}-[0-9]{4}");
@@ -344,9 +363,9 @@ static void cmdScrubPHI() {
 
     int mode = MessageBoxW(g_nppData._nppHandle,
         L"How should PHI fields be handled?\r\n\r\n"
-        L"  Yes  = Anonymize — replace with realistic fake data\r\n"
+        L"  Yes  = Anonymize -- replace with realistic fake data\r\n"
         L"         (fake names, SSNs, phones, addresses, etc.)\r\n\r\n"
-        L"  No   = Remove — replace with labels like [NAME], [SSN]\r\n"
+        L"  No   = Remove -- replace with labels like [NAME], [SSN]\r\n"
         L"         (clearly shows what was removed)\r\n\r\n"
         L"  Cancel = Abort",
         L"Scrub Protected Health Information",
@@ -382,10 +401,10 @@ static void cmdScrubPHI() {
     }
 
     // Second pass: collect replacements. `skipped` counts PHI fields we detected but
-    // could not produce a replacement for — those may still contain PHI, so the scrub
+    // could not produce a replacement for -- those may still contain PHI, so the scrub
     // must warn rather than report clean (fail-closed).
     int skipped = 0;
-    // Covered (line, fieldIdx) pairs — every PHI field we successfully queued for
+    // Covered (line, fieldIdx) pairs -- every PHI field we successfully queued for
     // replacement. Used by the anonymize-mode coverage check below.
     std::set<std::pair<int, int>> covered;
     auto addReplacement = [&](int li, int lineStart, const wchar_t* wline, const HL7Token& tok,
@@ -457,17 +476,18 @@ static void cmdScrubPHI() {
 
     // Anonymize-mode coverage check: the residual identifier scan can't run when
     // fakes are identifier-shaped, so instead verify structural coverage. Walk each
-    // segment with an INDEPENDENT raw split (not the tokenizer) and confirm every
-    // PHI-mapped, non-empty field was actually queued for replacement. A miss means
-    // the tokenizer and this splitter disagree — a possible silent PHI leak — so the
-    // scrub must warn rather than report clean.
+    // segment with an INDEPENDENT raw split (neither the tokenizer nor the lexer's
+    // segment-ID logic -- see rawSegmentID) and confirm every PHI-mapped, non-empty
+    // field was actually queued for replacement. A miss means the scrub pass and this
+    // splitter disagree -- a possible silent PHI leak -- so the scrub must warn rather
+    // than report clean.
     int coverageMisses = 0;
     {
         wchar_t fieldSep = lexer.delimiters().fieldSep;
         for (int li = 0; li < lineCount; li++) {
             std::wstring wl = getLineW(fn, ptr, li);
             if (wl.size() < 3) continue;
-            std::wstring segId = lexer.extractSegmentID(wl.c_str(), (int)wl.size());
+            std::wstring segId = rawSegmentID(wl);
             if (segId.empty()) continue;
             bool isMSH = (segId == L"MSH");
             bool isZ = (segId[0] == L'Z');
@@ -500,7 +520,7 @@ static void cmdScrubPHI() {
     fn(ptr, SCI_ENDUNDOACTION, 0, 0);
 
     // Security: discard undo history so the original PHI cannot be recovered via Ctrl+Z
-    // or serialized undo. This makes the scrub itself non-undoable — the confirmation
+    // or serialized undo. This makes the scrub itself non-undoable -- the confirmation
     // dialogs above warn the user to keep a backup first.
     fn(ptr, SCI_EMPTYUNDOBUFFER, 0, 0);
 
@@ -763,7 +783,7 @@ static LRESULT CALLBACK mllpWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_TIMER: {
             if (w == 1) {
                 KillTimer(h, 1);
-                // Fires ~80ms after buffer activation — well after NPP has finished
+                // Fires ~80ms after buffer activation -- well after NPP has finished
                 // switching AND re-applying the buffer's (NULL) language lexer, so
                 // our container lexer + styling is applied LAST and sticks. This is
                 // the same "after it settles" timing that already makes tab-close
@@ -815,7 +835,7 @@ static LRESULT CALLBACK mllpWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
                 // Only write PHI to disk when the user has opted in (Settings > MLLP >
                 // Save received messages). Otherwise the message opens as an in-memory
-                // buffer only — colored identically by the SCN_PAINTED self-heal, with
+                // buffer only -- colored identically by the SCN_PAINTED self-heal, with
                 // no cleartext PHI left on the filesystem. A saved .hl7 also activates
                 // reliably via its extension.
                 bool savedToDisk = false;
@@ -1705,7 +1725,7 @@ static void cmdCopyRichText() {
 }
 
 // Subtly box the field the caret is in, updated as the caret moves. Reuses the
-// caret→field analysis; the highlight lives on its own indicator so it coexists
+// caret->field analysis; the highlight lives on its own indicator so it coexists
 // with conformance/validation squiggles and the compare-diff highlight.
 static void highlightCurrentField(ScintillaView& view) {
     SciFnDirect fn = view.fnDirect;
@@ -1759,7 +1779,7 @@ static void cmdToggleFold() {
 
 static void cmdShowTree() {
     // Toggle the user's intent; visibility is then reconciled against whether the
-    // current buffer is HL7. Intent is "sticky" — if toggled on over a non-HL7
+    // current buffer is HL7. Intent is "sticky" -- if toggled on over a non-HL7
     // buffer, the panel appears as soon as an HL7 message becomes active.
     g_treeIntent = !g_treeIntent;
     updateTreeVisibility(getCurrentView());
@@ -1834,23 +1854,23 @@ extern "C" __declspec(dllexport) const wchar_t* getName() {
 extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     // Keyboard shortcuts. Ctrl+Alt combos are chosen to avoid Notepad++ defaults;
     // any conflict can be remapped by the user via Settings > Shortcut Mapper > Plugins.
-    // All Ctrl+Alt+Shift+ combos — plain Ctrl+Alt+<letter> gets grabbed by other
+    // All Ctrl+Alt+Shift+ combos -- plain Ctrl+Alt+<letter> gets grabbed by other
     // software on some machines; adding Shift dodges those interceptions.
-    g_skScrub      = { true, true, true, 'H' };             // Ctrl+Alt+Shift+H  — scrub PHI
-    g_skTree       = { true, true, true, 'T' };             // Ctrl+Alt+Shift+T  — toggle tree
-    g_skFold       = { true, true, true, 'G' };             // Ctrl+Alt+Shift+G  — toggle folding
-    g_skNextField  = { true, true, true, VK_RIGHT };        // Ctrl+Alt+Shift+Right — next field
-    g_skPrevField  = { true, true, true, VK_LEFT };         // Ctrl+Alt+Shift+Left  — prev field
-    g_skCheck      = { true, true, true, 'C' };             // Ctrl+Alt+Shift+C  — check conformance
-    g_skPretty     = { true, true, true, 'R' };             // Ctrl+Alt+Shift+R  — reformat / pretty-print
-    g_skEnable     = { true, true, true, 'E' };             // Ctrl+Alt+Shift+E  — force-enable HL7 mode
-    g_skValidate   = { true, true, true, 'V' };             // Ctrl+Alt+Shift+V  — validate / malform check
-    g_skCompare    = { true, true, true, 'D' };             // Ctrl+Alt+Shift+D  — compare the two views
-    g_skSettings   = { true, true, true, 'P' };             // Ctrl+Alt+Shift+P  — settings
-    g_skMllpSend   = { true, true, true, 'M' };             // Ctrl+Alt+Shift+M  — MLLP send message
-    g_skMllpListen = { true, true, true, 'L' };             // Ctrl+Alt+Shift+L  — MLLP listener toggle
-    g_skCopyPath   = { true, true, true, 'K' };             // Ctrl+Alt+Shift+K  — copy field path
-    g_skCopyRtf    = { true, true, true, 'W' };             // Ctrl+Alt+Shift+W  — copy as rich text
+    g_skScrub      = { true, true, true, 'H' };             // Ctrl+Alt+Shift+H  -- scrub PHI
+    g_skTree       = { true, true, true, 'T' };             // Ctrl+Alt+Shift+T  -- toggle tree
+    g_skFold       = { true, true, true, 'G' };             // Ctrl+Alt+Shift+G  -- toggle folding
+    g_skNextField  = { true, true, true, VK_RIGHT };        // Ctrl+Alt+Shift+Right -- next field
+    g_skPrevField  = { true, true, true, VK_LEFT };         // Ctrl+Alt+Shift+Left  -- prev field
+    g_skCheck      = { true, true, true, 'C' };             // Ctrl+Alt+Shift+C  -- check conformance
+    g_skPretty     = { true, true, true, 'R' };             // Ctrl+Alt+Shift+R  -- reformat / pretty-print
+    g_skEnable     = { true, true, true, 'E' };             // Ctrl+Alt+Shift+E  -- force-enable HL7 mode
+    g_skValidate   = { true, true, true, 'V' };             // Ctrl+Alt+Shift+V  -- validate / malform check
+    g_skCompare    = { true, true, true, 'D' };             // Ctrl+Alt+Shift+D  -- compare the two views
+    g_skSettings   = { true, true, true, 'P' };             // Ctrl+Alt+Shift+P  -- settings
+    g_skMllpSend   = { true, true, true, 'M' };             // Ctrl+Alt+Shift+M  -- MLLP send message
+    g_skMllpListen = { true, true, true, 'L' };             // Ctrl+Alt+Shift+L  -- MLLP listener toggle
+    g_skCopyPath   = { true, true, true, 'K' };             // Ctrl+Alt+Shift+K  -- copy field path
+    g_skCopyRtf    = { true, true, true, 'W' };             // Ctrl+Alt+Shift+W  -- copy as rich text
 
     g_nbFuncItems = 0;
 
@@ -2008,7 +2028,7 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
             updateTreeVisibility(view);
             // Re-assert styling AFTER activation fully settles. NPP re-applies the
             // buffer's language lexer around this notification (wiping our colors),
-            // and it does so LATER than a synchronous or posted re-style runs — so
+            // and it does so LATER than a synchronous or posted re-style runs -- so
             // a short timer is used to land after NPP is completely done.
             if (g_hMllpWnd) SetTimer(g_hMllpWnd, 1, 80, nullptr);
             break;
@@ -2046,7 +2066,7 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
 
         case NPPN_SHUTDOWN: {
             // Stop the listener (joins its thread) and tear down the marshaling
-            // window on the UI thread — never in DllMain (loader lock).
+            // window on the UI thread -- never in DllMain (loader lock).
             if (g_listener.running()) g_listener.stop();
             if (g_hMllpWnd) { DestroyWindow(g_hMllpWnd); g_hMllpWnd = nullptr; }
             break;
@@ -2072,7 +2092,7 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
                 // M7: incremental styling. Re-style only the lines the edit touched
                 // instead of the whole document, so typing in a multi-MB log stays
                 // responsive. styleRange re-derives delimiters from MSH each call, so
-                // the styled range is correct on its own — the only cross-line
+                // the styled range is correct on its own -- the only cross-line
                 // dependency is the MSH delimiter line, so edits there fall back to a
                 // full restyle.
                 SciFnDirect fn = view->fnDirect;
@@ -2096,7 +2116,7 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
                 }
 
                 // Fold structure and HL7 detection only change when lines are
-                // added/removed — skip that work on plain in-line typing.
+                // added/removed -- skip that work on plain in-line typing.
                 if (linesAdded != 0) {
                     setFoldLevels(*view);
                     checkAndEnableHL7(*view);
@@ -2106,10 +2126,10 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
         }
 
         case SCN_PAINTED: {
-            // Styling self-heal — the mechanism that actually survives NPP's wipes.
+            // Styling self-heal -- the mechanism that actually survives NPP's wipes.
             // SCI_SETLEXER(SCLEX_CONTAINER) is a no-op on Scintilla 5 (NPP 8.4+),
             // so NPP still owns the buffer's lexer and wipes our manual styling
-            // whenever it re-applies the buffer's language — at times we cannot
+            // whenever it re-applies the buffer's language -- at times we cannot
             // predict (every prior timing-based fix lost this race). SCN_PAINTED
             // fires after EVERY paint, including the one right after any wipe, so
             // checking health here and re-styling converges no matter when the
@@ -2130,7 +2150,7 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
             int fore = (int)fn(ptr, SCI_STYLEGETFORE, SCE_HL7_SEGMENT_ID, 0);
             bool bytesOk = (st0 == SCE_HL7_SEGMENT_ID);             // style bytes intact
             bool defsOk  = (fore == 0xC00000);                      // style defs intact (theme re-apply resets these)
-            if (bytesOk && defsOk) { g_healCount = 0; break; }      // healthy — replenish heal budget
+            if (bytesOk && defsOk) { g_healCount = 0; break; }      // healthy -- replenish heal budget
 
             // Unhealthy: confirm it really is HL7 on the settled document, then heal.
             if (!ScintillaStyler::detectHL7(view->hWnd, fn, ptr) && !currentPathHasHl7Ext()) {

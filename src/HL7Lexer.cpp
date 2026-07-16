@@ -1,6 +1,16 @@
 #include "HL7Lexer.h"
 #include <cwctype>
 
+namespace {
+
+// Segment-ID character classes. Deliberately NOT iswalpha/iswalnum: those are
+// locale-dependent and accept lowercase and accented Unicode letters, so prose
+// ("The quick brown fox") parses as segment "The".
+inline bool isSegAlpha(wchar_t c) { return c >= L'A' && c <= L'Z'; }
+inline bool isSegAlnum(wchar_t c) { return (c >= L'A' && c <= L'Z') || (c >= L'0' && c <= L'9'); }
+
+} // namespace
+
 HL7Lexer::HL7Lexer() {
 }
 
@@ -38,26 +48,37 @@ std::wstring HL7Lexer::extractSegmentID(const wchar_t* line, int lineLen) const 
     // Skip whitespace
     while (start < lineLen && std::iswspace(line[start])) start++;
 
-    // Segment IDs are 3 uppercase alpha characters
+    // A segment ID is exactly three characters: an uppercase letter followed by two
+    // uppercase-alphanumerics. The digits are NOT optional trivia -- PV1, NK1, GT1,
+    // IN1/IN2, PD1, DG1 and PR1 all carry heavy PHI, and rejecting them here makes
+    // cmdScrubPHI skip the whole line (it bails on an empty segment ID).
     if (start + 3 > lineLen) return L"";
 
     wchar_t a = line[start];
     wchar_t b = line[start + 1];
     wchar_t c = line[start + 2];
 
-    if (std::iswalpha(a) && std::iswalnum(b) && std::iswalnum(c)) {
-        return std::wstring{ a, b, c };
-    }
+    if (!isSegAlpha(a) || !isSegAlnum(b) || !isSegAlnum(c)) return L"";
 
-    return L"";
+    // MSH is self-defining: MSH-1 *is* the field separator, so whatever character
+    // follows "MSH" is the delimiter by definition. It must be accepted without a
+    // delimiter check -- that acceptance is what lets parseMSH discover a
+    // non-'|' separator before m_delimiters holds anything trustworthy.
+    if (a == L'M' && b == L'S' && c == L'H') return L"MSH";
+
+    // Every other segment ID must be delimited by the field separator (or end the
+    // line). Without this, any three uppercase characters -- "THE QUICK BROWN FOX"
+    // -- parse as a segment and can auto-activate the plugin on prose.
+    if (start + 3 < lineLen && line[start + 3] != m_delimiters.fieldSep) return L"";
+
+    return std::wstring{ a, b, c };
 }
 
+// Defined in terms of extractSegmentID so the two can never disagree. They
+// previously duplicated the character test, and tokenize() (isSegmentStart) drifting
+// from the PHI lookup (extractSegmentID) is exactly the kind of split that hides bugs.
 bool HL7Lexer::isSegmentStart(const wchar_t* line, int lineLen) const {
-    if (lineLen < 3) return false;
-    int i = 0;
-    while (i < lineLen && std::iswspace(line[i])) i++;
-    if (i + 3 > lineLen) return false;
-    return std::iswalpha(line[i]) && std::iswalnum(line[i + 1]) && std::iswalnum(line[i + 2]);
+    return !extractSegmentID(line, lineLen).empty();
 }
 
 int HL7Lexer::getFieldIndexAtPosition(const wchar_t* line, int lineLen, int charPos) const {
@@ -176,7 +197,7 @@ void HL7Lexer::tokenize(const wchar_t* line, int lineLen, std::vector<HL7Token>&
             // separator. Scan for a closing escape char, but stop at a field
             // separator or EOL. If none is found first, this backslash is not a
             // real escape (e.g. the '\' in the MSH-2 encoding chars "^~\&", or a
-            // stray backslash in data) — treat it as a literal value character so
+            // stray backslash in data) -- treat it as a literal value character so
             // field boundaries are never miscounted. Fail-closed: field structure
             // is preserved no matter how malformed the escape is.
             int scan = pos + 1;
@@ -197,11 +218,11 @@ void HL7Lexer::tokenize(const wchar_t* line, int lineLen, std::vector<HL7Token>&
             }
 
         } else if (ch == L'\r' || ch == L'\n') {
-            // End of line — skip
+            // End of line -- skip
             pos++;
 
         } else {
-            // Field value — accumulate until next delimiter
+            // Field value -- accumulate until next delimiter
             int valueStart = pos;
             while (pos < lineLen) {
                 wchar_t c = line[pos];

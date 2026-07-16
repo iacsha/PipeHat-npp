@@ -49,7 +49,7 @@ The plugin activates automatically on HL7 **content** (first non-blank segment i
 | `Ctrl+Alt+Shift+H` | Scrub PHI | `Ctrl+Alt+Shift+D` | Compare the two views |
 | `Ctrl+Alt+Shift+C` | Check conformance | `Ctrl+Alt+Shift+R` | Pretty-print / reformat |
 | `Ctrl+Alt+Shift+G` | Toggle folding | `Ctrl+Alt+Shift+E` | Enable HL7 highlighting |
-| `Ctrl+Alt+Shift+←` / `->` | Previous / next field | `Ctrl+Alt+Shift+P` | Settings |
+| `Ctrl+Alt+Shift+<-` / `->` | Previous / next field | `Ctrl+Alt+Shift+P` | Settings |
 | `Ctrl+Alt+Shift+M` | Send message (MLLP) | `Ctrl+Alt+Shift+L` | Toggle MLLP listener |
 | `Ctrl+Alt+Shift+K` | Copy field path | `Ctrl+Alt+Shift+W` | Copy as rich text |
 
@@ -99,9 +99,16 @@ cmake --build build --config Release
 
 Then follow the install steps above with the freshly built DLL.
 
-There is no automated test suite in-repo; verification is manual -- open an HL7 sample in a
-debug Notepad++ build and exercise the menu commands. (A standalone lexer harness is used
-during development to verify the tokenizer.)
+Verification is mostly manual -- open an HL7 sample in a debug Notepad++ build and exercise
+the menu commands. The parser and PHI-coverage regressions that matter are pinned by a
+standalone harness that links only `HL7Lexer.cpp` + `PHIScrubber.cpp` (no Windows deps) and
+exits non-zero on failure:
+
+```powershell
+# from a Visual Studio developer prompt, at the repo root
+cl /EHsc /std:c++17 /I src tests\SegmentIDTest.cpp src\HL7Lexer.cpp src\PHIScrubber.cpp /Fe:build\SegmentIDTest.exe
+build\SegmentIDTest.exe
+```
 
 ---
 
@@ -116,9 +123,19 @@ during development to verify the tokenizer.)
 
 The scrubber is a **best-effort de-identification aid, not a compliance guarantee.**
 
+> ⚠️ **Fixed in v2.0.0 -- re-scrub anything scrubbed by an earlier build.** Segment IDs
+> containing a digit (`PV1`, `NK1`, `GT1`, `IN1`, `IN2`, `PD1`, `DG1`, `PR1`, `PV2`) were not
+> recognized, so those segments were skipped entirely -- next-of-kin details, guarantor
+> **SSN**/DOB, insurance IDs and doctor names survived the scrub, **and the scrub still
+> reported clean** because the coverage check shared the same blind spot. `PID` was
+> unaffected, which is why the leak was not visible. If you shared output from an earlier
+> build, treat it as **not de-identified**.
+
 - It runs **fail-closed**: if any PHI-mapped field can't be processed, or a residual scan
   finds an identifier, the completion dialog switches to a **warning** -- *do not treat the
-  output as de-identified* until you've reviewed it.
+  output as de-identified* until you've reviewed it. The anonymize-mode coverage check
+  derives segments independently of the parser, so a parser gap surfaces as a warning
+  rather than a silent skip.
 - Scrubbing **empties the undo buffer** on purpose, so originals are **not** recoverable
   via Ctrl+Z. Keep your own backup of the source message.
 - The on-disk original and Notepad++'s `backup\` snapshots may still contain pre-scrub PHI.
@@ -140,7 +157,7 @@ MSH-9.required=true        # field must be present
 
 Violating fields are squiggle-underlined in the editor and listed in a summary dialog.
 
-You don't have to hand-edit the file: **Settings** (`Ctrl+Alt+Shift+P`) opens a rule editor —
+You don't have to hand-edit the file: **Settings** (`Ctrl+Alt+Shift+P`) opens a rule editor --
 a `segment / field / max / allowed values / required` grid with Add / Edit / Remove -- that
 reads and writes `PipeHat.profile` and reloads it immediately so the next Check Conformance
 uses your changes. The file format is unchanged, so hand-editing and the GUI interoperate.
@@ -160,7 +177,7 @@ in **Settings -> MLLP**.
   message is auto-acknowledged (`AA`) and opened in a tab (colored like any HL7 buffer). The menu
   item shows a checkmark while listening.
 
-**Saving received messages is OFF by default.** Inbound messages open as in-memory tabs only —
+**Saving received messages is OFF by default.** Inbound messages open as in-memory tabs only --
 no PHI touches disk. If you enable *Save received messages to disk* in **Settings -> MLLP**, each
 message is written to `%LOCALAPPDATA%\PipeHat\received\` as `<type>_<controlId>_<time>.hl7`
 (deliberately under `LOCALAPPDATA`, not the roaming plugin-config folder, so cleartext PHI can't
@@ -194,8 +211,11 @@ a cleartext-PHI confirmation. Network settings persist to `PipeHat.ini`.
 
 ## Status
 
-**v1.3.0.** Crash-class defects and the fail-open PHI leak from the initial review are fixed
-and build-verified. v1.1 added trigger-event decoding, HIPAA Safe Harbor scrubber coverage,
+**v1.3.1.** Fixes a **silent PHI leak**: segments whose IDs contain a digit (`PV1`, `NK1`,
+`GT1`, `IN1`…) were not recognized and were skipped by the scrubber while it still reported
+clean -- see the scrubber warning above and `docs/05-CODE-REVIEW.md` (C6). Pinned by
+`tests/SegmentIDTest.cpp`. Crash-class defects and the fail-open PHI leak from the initial
+review are fixed and build-verified. v1.1 added trigger-event decoding, HIPAA Safe Harbor scrubber coverage,
 conformance checking, hotkeys, and smarter panel behavior; v1.2 adds structural validation,
 message compare/diff, escape + HL7-version decoding, pretty-print, folding, and broader
 activation; v1.3 adds the **Settings GUI** for editing conformance rules without hand-editing

@@ -8,6 +8,46 @@
 
 ---
 
+## Fix Status -- 2026-07-16 (C6: segment IDs with digits -- silent PHI leak)
+
+✅ **C6 -- `extractSegmentID` rejected every segment ID containing a digit.** The check was
+`iswalpha(a) && iswalpha(b) && iswalpha(c)`, and `iswalpha(L'1')` is false, so `PV1`, `NK1`,
+`GT1`, `IN1`, `IN2`, `PD1`, `DG1`, `PR1` and `PV2` all returned `L""`. `cmdScrubPHI` bails on an
+empty segment ID (`if (segId.empty()) continue;`), so those lines were **skipped in full**:
+next-of-kin names/addresses/phones, guarantor name/DOB/**SSN**, insurance IDs and
+attending/referring/admitting doctors were never scrubbed. **9 of the scrubber's 24 mapped
+segments** were affected. `PID` is all-alpha, which is why the leak presented as a working
+scrubber. Originally spotted by an OpenCode review pass.
+
+🔴 **The fail-closed coverage check did not fail closed.** The anonymize-mode check is
+documented as an *independent* raw split, but it derived its segment ID with the same
+`lexer.extractSegmentID` call and `continue`d on the same empty result. A defect at the
+segment-ID level was therefore invisible to both the scrub pass and its own safety net:
+**Scrub PHI reported "no unprocessed fields, coverage gaps, or residual identifier patterns"
+on a message whose guarantor SSN was untouched.** This is the exact failure mode `CLAUDE.md`
+warns about ("a parse gap becomes a silent PHI leak"). A safety net that shares a dependency
+with the thing it audits is not a safety net.
+
+**Fixes applied:**
+- `extractSegmentID` now uses explicit `A-Z` / `0-9` range checks rather than locale-dependent
+  `iswalpha`/`iswalnum` (which accept lowercase and accented Unicode letters), requires the
+  field separator to follow the ID, and special-cases `MSH` -- MSH-1 *is* the field separator,
+  so `MSH` must be accepted before `parseMSH` can discover a non-`|` delimiter.
+- `isSegmentStart` is now defined in terms of `extractSegmentID` so the tokenizer and the PHI
+  lookup can never disagree about what a segment is.
+- The coverage check derives its own segment ID via `rawSegmentID` in `main.cpp`, deliberately
+  permissive, with no call into `HL7Lexer`.
+- **Regression test:** `tests/SegmentIDTest.cpp` (standalone, links `HL7Lexer.cpp` +
+  `PHIScrubber.cpp`, no Windows deps). Verified to fail **27 assertions against the pre-fix
+  lexer** -- including `GT1-12 guarantor SSN` -- and pass all against the fix. Build/run
+  instructions are in the file header; exits non-zero so it can gate a release.
+
+**Also closed (fallout of the same check):** any three uppercase characters parsed as a
+segment, so `THE QUICK BROWN FOX` was segment `THE` and `PIDX|...` was `PID` -- a false-activation
+and mis-parse source. Now rejected by the delimiter requirement.
+
+---
+
 ## Fix Status -- 2026-07-14
 
 Crash class and undo-leak addressed in this pass (build verified, Release DLL compiles clean):
@@ -44,14 +84,14 @@ design) -- a structural coverage check is the planned substitute (see roadmap).
 
 | # | Severity | Finding | File:line |
 |---|----------|---------|-----------|
-| C1 | 🔴 Critical → ✅ | `SCI_GETLINE` used with no length guard → stack buffer overflow on long lines | main.cpp; ScintillaStyler.cpp; MessageTreeView.cpp (now via `SciUtils.h`) |
-| C2 | 🔴 Critical → ✅ | Syntax styling uses `SCI_SETSTYLINGEX` (pointer msg) with an int → access violation | ScintillaStyler.cpp |
-| C3 | 🟠 High → ✅ | PHI scrubbing silently retains PHI when the line miscounts fields | HL7Lexer.cpp (tokenize/getFieldIndexAtPosition); main.cpp |
-| C4 | 🟠 High → ✅ | MSH tokenization destroyed by `\&` + MSH off-by-one → MSH PHI never scrubbed | HL7Lexer.cpp; main.cpp; MessageTreeView.cpp |
-| C5 | 🔴 Critical → ✅ | Scrub never empties the undo buffer → original PHI recoverable with Ctrl+Z | main.cpp |
-| H5 | 🟠 High | `strlen()` on non-NUL-terminated Scintilla buffer → over-read / bogus length | every `SCI_GETLINE` call site |
-| M6 | 🟡 Medium | Deterministic LCG + dead seed path → same fake data every run, no referential integrity | PHIScrubber.cpp:60-72,153-165; main.cpp:153-165 |
-| M7 | 🟡 Medium | `styleAll()` on every `SCN_MODIFIED` → full re-lex per keystroke (large-file freeze) | main.cpp:366-381 |
+| C1 | 🔴 Critical -> ✅ | `SCI_GETLINE` used with no length guard -> stack buffer overflow on long lines | main.cpp; ScintillaStyler.cpp; MessageTreeView.cpp (now via `SciUtils.h`) |
+| C2 | 🔴 Critical -> ✅ | Syntax styling uses `SCI_SETSTYLINGEX` (pointer msg) with an int -> access violation | ScintillaStyler.cpp |
+| C3 | 🟠 High -> ✅ | PHI scrubbing silently retains PHI when the line miscounts fields | HL7Lexer.cpp (tokenize/getFieldIndexAtPosition); main.cpp |
+| C4 | 🟠 High -> ✅ | MSH tokenization destroyed by `\&` + MSH off-by-one -> MSH PHI never scrubbed | HL7Lexer.cpp; main.cpp; MessageTreeView.cpp |
+| C5 | 🔴 Critical -> ✅ | Scrub never empties the undo buffer -> original PHI recoverable with Ctrl+Z | main.cpp |
+| H5 | 🟠 High | `strlen()` on non-NUL-terminated Scintilla buffer -> over-read / bogus length | every `SCI_GETLINE` call site |
+| M6 | 🟡 Medium | Deterministic LCG + dead seed path -> same fake data every run, no referential integrity | PHIScrubber.cpp:60-72,153-165; main.cpp:153-165 |
+| M7 | 🟡 Medium | `styleAll()` on every `SCN_MODIFIED` -> full re-lex per keystroke (large-file freeze) | main.cpp:366-381 |
 | M8 | 🟡 Medium | PHI field map has HIPAA Safe Harbor gaps (see §PHI Coverage) | PHIScrubber.cpp:178-282 |
 | L9 | 🔵 Low | About box claims `.hl7` auto-activation; detection is MSH-first-line only | main.cpp:263 vs ScintillaStyler.cpp:225-238 |
 | L10 | 🔵 Low | No compiler/linker hardening flags set (`/guard:cf`, `/GS` explicit) | CMakeLists.txt |
@@ -61,7 +101,7 @@ design) -- a structural coverage check is the planned substitute (see roadmap).
 
 ## Critical Findings
 
-### C1 -- `SCI_GETLINE` stack buffer overflow (untrusted input → memory corruption)
+### C1 -- `SCI_GETLINE` stack buffer overflow (untrusted input -> memory corruption)
 
 Every read of document text uses this pattern:
 
@@ -81,7 +121,7 @@ nothing here.
 **Consequence:** any HL7 line longer than the fixed buffer (4096 or 8192 bytes)
 overflows the stack. This is not exotic in HL7 -- an `OBX-5` carrying a base64-encoded
 embedded PDF/CDA document routinely exceeds 8 KB on a single line. A crafted or merely
-large message corrupts the stack inside Notepad++ → crash at best, controllable
+large message corrupts the stack inside Notepad++ -> crash at best, controllable
 overwrite at worst. **This is the headline security finding: unbounded write from
 untrusted file content.**
 
@@ -100,14 +140,14 @@ sciV(SCI_SETSTYLINGEX, utf8Len, style);   // style is an int (e.g. 1)
 `SCI_SETSTYLINGEX` (2073) expects `(int length, const char *styles)` -- a pointer to a
 per-character style array. The code passes the **style number** as the `lParam`.
 Scintilla then dereferences that integer as an address and reads `utf8Len` bytes from,
-e.g., address `0x1` → access violation.
+e.g., address `0x1` -> access violation.
 
 The intended message is `SCI_SETSTYLING` (2033) -- `(int length, int style)` -- which is
 also defined in the bundled header one line above. As written, styling would fault the
 moment any HL7 buffer is colorized, which strongly implies the highlighter path has
 never actually run on a live document.
 
-**Fix:** change `SCI_SETSTYLINGEX` → `SCI_SETSTYLING` at both call sites (lines 214,
+**Fix:** change `SCI_SETSTYLINGEX` -> `SCI_SETSTYLING` at both call sites (lines 214,
 219). One-word change; it is the difference between "highlighting works" and "N++
 crashes on open."
 
@@ -187,14 +227,14 @@ could not fully account for.
 
 ### M6 -- Anonymization is deterministic and has no referential integrity
 
-`fakeRandom()` is a global LCG seeded only by `fakeInit()`, which **is never called** —
+`fakeRandom()` is a global LCG seeded only by `fakeInit()`, which **is never called** --
 the seed-scan block in `main.cpp:153-165` computes a `seed` string and then `break`s
 without using it (dead code). So `g_fakeSeed` starts at 0 every run and produces the
 *same* fake identities every time. Worse, the same real value (e.g. patient ID
 appearing in PID-3 and PV1-19) maps to *different* fakes because replacement is
 positional, not value-keyed -- so a de-identified message loses the internal linkage that
 makes it useful as test data. For realistic anonymization, hash each original value to
-seed its fake and cache original→fake so identical inputs yield identical outputs.
+seed its fake and cache original->fake so identical inputs yield identical outputs.
 
 ### M7 -- Full re-lex on every keystroke
 
@@ -237,7 +277,7 @@ hand curation.
   destructive edits.
 - **Clean separation** of lexer / styler / segment DB / tree / scrubber. The refactor
   surface for the fixes above is small and well-contained.
-- **Format-string buffers are correctly sized** (`fakeSSN`, `fakePhone`, `zip`, DOB) —
+- **Format-string buffers are correctly sized** (`fakeSSN`, `fakePhone`, `zip`, DOB) --
   tight but verified in-bounds; no overflow there.
 
 ---

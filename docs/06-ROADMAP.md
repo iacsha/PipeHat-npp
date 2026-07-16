@@ -14,11 +14,11 @@
 
 | Item | What | Status |
 |------|------|--------|
-| Crash: styling | `SCI_SETSTYLINGEX` → `SCI_SETSTYLING` | ✅ |
+| Crash: styling | `SCI_SETSTYLINGEX` -> `SCI_SETSTYLING` | ✅ |
 | Crash: line reads | Length-safe reads via `SciUtils.h` (`SCI_LINELENGTH`-sized) | ✅ |
 | PHI leak: undo | `SCI_EMPTYUNDOBUFFER` after scrub | ✅ |
 | PHI leak: parser | Escape sequences can't cross field separators; MSH off-by-one fixed | ✅ |
-| PHI fail-closed | Skipped-field count + residual SSN/digit scan → warning dialog | ✅ |
+| PHI fail-closed | Skipped-field count + residual SSN/digit scan -> warning dialog | ✅ |
 | Build hardening | `/guard:cf /sdl /GS /DYNAMICBASE /NXCOMPAT` | ✅ |
 | Brand | Renamed to **PipeHat** | ✅ |
 
@@ -31,7 +31,7 @@
 | Trigger-event decoding | MSH-9 / EVN-1 message-type + event decode in tooltips and tree (`TriggerEventDB.h`) | ✅ |
 | M8 (partial) | Safe Harbor dates (admit/discharge/observation/event/dx/procedure) + provider segments (ROL/AIP/AIG/AIL/PRD/PV1-52); residual scan now flags email + IPv4 | ✅ |
 | Conformance profiles | Per-interface `max` / `values` / `required` rules from editable `PipeHat.profile`; `Check Conformance` squiggles + report (`ConformanceProfile.h`) | ✅ |
-| Navigation hotkeys | Ctrl+Alt+ T/H/C/F and Ctrl+Alt+←/→ field nav | ✅ |
+| Navigation hotkeys | Ctrl+Alt+ T/H/C/F and Ctrl+Alt+<-/-> field nav | ✅ |
 | Panel behavior | Tree no longer auto-loads on startup; follows the active buffer and closes with the HL7 message | ✅ |
 
 **Still open from these areas:** M8 remainder (age > 89, anonymize-mode structural coverage
@@ -44,7 +44,7 @@ check), conformance in hover tooltips + tree problem-list.
 | Item | What | Status |
 |------|------|--------|
 | Escape decoding | `HL7Escape.h` -- `\F\ \S\ \T\ \R\ \E\ \.br\ \Xhh\` decoded on hover | ✅ |
-| HL7 version awareness | MSH-12 → version name + era in tooltip/tree (`versionName`) | ✅ |
+| HL7 version awareness | MSH-12 -> version name + era in tooltip/tree (`versionName`) | ✅ |
 | Validation / malform | `Validator.h` + Validate command (Ctrl+Alt+V); advisory squiggles | ✅ |
 | Message compare/diff | `MessageDiff.h` + Compare Views (Ctrl+Alt+Shift+D); side-by-side view comparison with field-level highlighting in both panes | ✅ |
 | Pretty-print | Segments-per-line reformat (Ctrl+Alt+R) | ✅ |
@@ -79,7 +79,7 @@ toggle; needs live in-Notepad++ verification before release.
 |-------|------|--------|
 | Protocol | `MllpProtocol.h` (header-only, pure) -- MLLP framing, incremental stream de-framer, `buildAck`/`parseAck` | ✅ 20/20 standalone test |
 | Transport | `MllpTransport.{h,cpp}` -- Winsock sender (non-blocking connect + timeout) and background-thread listener (accept loop, per-connection service, clean stop); UI-agnostic | ✅ 12/12 loopback test |
-| Integration | `main.cpp` -- hidden message-only window marshals inbound → new buffer (UI thread) and ACK results → dialog; menu items **Send Message (MLLP)** (Ctrl+Alt+Shift+M) and **Toggle MLLP Listener** (Ctrl+Alt+Shift+L); config in `PipeHat.ini` | ⏳ built; manual NPP test pending |
+| Integration | `main.cpp` -- hidden message-only window marshals inbound -> new buffer (UI thread) and ACK results -> dialog; menu items **Send Message (MLLP)** (Ctrl+Alt+Shift+M) and **Toggle MLLP Listener** (Ctrl+Alt+Shift+L); config in `PipeHat.ini` | ⏳ built; manual NPP test pending |
 
 **Security model (implemented):** OFF by default; loopback-only bind unless the
 user opts in *and* supplies a bind address (`MllpConfig::effectiveBindAddr` fails
@@ -115,7 +115,7 @@ Hover or tree-label decode of coded values, not just field names:
 - **ADT** `A01`–`A62` (A01 Admit, A02 Transfer, A03 Discharge, A04 Register, A08 Update, A11 Cancel Admit, …)
 - **SIU** `S12`–`S26` (S12 New Appt, S13 Reschedule, S14 Modify, S15 Cancel, S17 Delete, …)
 - **ORM/ORU/MDM/DFT** common events; also `EVN-1` event type and other ID-table fields.
-- Implementation: two small `code → meaning` tables keyed by message type; parse the `^`-delimited MSH-9 and append the decode in `showFieldTooltip` and the tree node label. Low effort, high daily value.
+- Implementation: two small `code -> meaning` tables keyed by message type; parse the `^`-delimited MSH-9 and append the decode in `showFieldTooltip` and the tree node label. Low effort, high daily value.
 
 **HL7 version awareness** 💡
 Read MSH-12, load the matching field table (PID/PV1/OBX layouts differ across 2.3/2.5/2.7). Biggest single correctness upgrade for tooltips + tree. Pairs with M8 (data-driven tables).
@@ -201,7 +201,7 @@ Protocol (MLLP) framing (`<VT>` 0x0B … message … `<FS>` 0x1C `<CR>` 0x0D):
   (A dockable live log panel remains a possible nicety.)
 - **Auto-update / update prompt** ✅ **done (check)** -- Check for Updates (menu) queries the GitHub
   Releases API (`UpdateCheck.{h,cpp}`, WinHTTP, off the UI thread), compares the latest tag against
-  `HL7_PLUGIN_VERSION`, and either links to the release or reports "up to date". User-initiated only —
+  `HL7_PLUGIN_VERSION`, and either links to the release or reports "up to date". User-initiated only --
   never automatic, no telemetry. Verified against the live API. Still open: auto-*download*+swap
   (a loaded DLL can't overwrite itself -- needs a helper/restart step), an opt-in check-on-startup,
   and listing in the official `nppPluginList` for PluginAdmin management.
