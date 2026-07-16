@@ -20,6 +20,7 @@
 #include "SciUtils.h"
 #include "ConformanceProfile.h"
 #include "Validator.h"
+#include "MessageIndex.h"
 #include "MessageDiff.h"
 #include "SettingsDialog.h"
 #include "MllpConfig.h"
@@ -130,7 +131,7 @@ static int g_healCount = 0;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[20];
+static FuncItem g_funcItems[22];
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -147,6 +148,8 @@ static ShortcutKey g_skMllpSend;
 static ShortcutKey g_skMllpListen;
 static ShortcutKey g_skCopyPath;
 static ShortcutKey g_skCopyRtf;
+static ShortcutKey g_skNextMsg;
+static ShortcutKey g_skPrevMsg;
 
 // ── Helpers ──
 static HWND getCurrentScintilla() {
@@ -1820,6 +1823,55 @@ static void moveToField(bool forward) {
 static void cmdNextField() { moveToField(true); }
 static void cmdPrevField() { moveToField(false); }
 
+// SCI_CALLTIPSHOW takes UTF-8 bytes, not wchar_t.
+static void showCalltip(SciFnDirect fn, sptr_t ptr, const std::wstring& text) {
+    int pos = (int)fn(ptr, SCI_GETCURRENTPOS, 0, 0);
+    std::string utf8 = wToUtf8(text);
+    fn(ptr, SCI_CALLTIPSHOW, pos, (sptr_t)utf8.c_str());
+}
+
+// Message navigation for buffers holding many messages (log/batch files). Jumps the
+// caret to the next/previous MSH and reports position as "message 12 of 480" plus the
+// message type and control id, so you know where you are without counting segments.
+static void moveToMessage(bool forward) {
+    ScintillaView& view = getCurrentView();
+    if (!view.hWnd || !view.fnDirect) return;
+    SciFnDirect fn = view.fnDirect;
+    sptr_t ptr = view.ptrDirect;
+
+    int lineCount = (int)fn(ptr, SCI_GETLINECOUNT, 0, 0);
+    hl7::MessageIndex index;
+    index.build(lineCount, [fn, ptr](int i) { return getLineW(fn, ptr, i); });
+    if (index.empty()) {
+        showCalltip(fn, ptr, L"No HL7 messages found in this buffer.");
+        return;
+    }
+
+    int caretPos  = (int)fn(ptr, SCI_GETCURRENTPOS, 0, 0);
+    int caretLine = (int)fn(ptr, SCI_LINEFROMPOSITION, caretPos, 0);
+
+    int target = forward ? index.nextStartLine(caretLine) : index.prevStartLine(caretLine);
+    if (target < 0) {
+        showCalltip(fn, ptr, forward ? L"Already at the last message."
+                                     : L"Already at the first message.");
+        return;
+    }
+
+    fn(ptr, SCI_GOTOLINE, target, 0);
+    fn(ptr, SCI_SCROLLCARET, 0, 0);
+
+    int mi = index.indexAt(target);
+    if (mi < 0) return;
+    const hl7::MessageSpan* s = index.at((size_t)mi);
+    std::wstring msg = L"Message " + std::to_wstring(mi + 1) + L" of " +
+                       std::to_wstring(index.count());
+    if (!s->type.empty())      msg += L"  \x2014  " + s->type;
+    if (!s->controlId.empty()) msg += L"  [" + s->controlId + L"]";
+    showCalltip(fn, ptr, msg);
+}
+static void cmdNextMessage() { moveToMessage(true); }
+static void cmdPrevMessage() { moveToMessage(false); }
+
 // Manually force HL7 mode on the current buffer, bypassing auto-detection. Lets the
 // user enable highlighting for content that doesn't start with MSH/FHS/BHS (embedded
 // messages, custom headers, odd exports). Uses whatever delimiters MSH declares, or
@@ -1871,6 +1923,8 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skMllpListen = { true, true, true, 'L' };             // Ctrl+Alt+Shift+L  -- MLLP listener toggle
     g_skCopyPath   = { true, true, true, 'K' };             // Ctrl+Alt+Shift+K  -- copy field path
     g_skCopyRtf    = { true, true, true, 'W' };             // Ctrl+Alt+Shift+W  -- copy as rich text
+    g_skNextMsg    = { true, true, true, VK_NEXT };         // Ctrl+Alt+Shift+PgDn -- next message
+    g_skPrevMsg    = { true, true, true, VK_PRIOR };        // Ctrl+Alt+Shift+PgUp -- previous message
 
     g_nbFuncItems = 0;
 
@@ -1907,6 +1961,20 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_funcItems[g_nbFuncItems]._pShKey = &g_skPrevField;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Next Message");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdNextMessage;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skNextMsg;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Previous Message");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdPrevMessage;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skPrevMsg;
     g_nbFuncItems++;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Check Conformance");

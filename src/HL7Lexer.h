@@ -40,6 +40,14 @@ public:
     int getFieldIndexAtPosition(const wchar_t* line, int lineLen, int charPos) const;
 
     const HL7Delimiters& delimiters() const { return m_delimiters; }
+
+    // Load delimiters resolved elsewhere -- in practice from MessageIndex, which knows
+    // which message a line belongs to. A buffer can hold many messages, each declaring
+    // its own separators, so "parseMSH the first MSH and reuse it" is wrong for any
+    // multi-message file. Prefer MessageIndex::delimitersFor(line) over parseMSH when
+    // walking a buffer.
+    void setDelimiters(const HL7Delimiters& d) { m_delimiters = d; }
+
     void reset();
 
 private:

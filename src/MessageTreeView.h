@@ -45,7 +45,9 @@ private:
     };
 
     void clearTree();
-    HTREEITEM addSegmentNode(const std::wstring& text, int lineNum, LPARAM lparam);
+    HTREEITEM addSegmentNode(const std::wstring& text, int lineNum, LPARAM lparam,
+                             HTREEITEM parent = TVI_ROOT);
+    HTREEITEM addMessageNode(const std::wstring& text, LPARAM lparam);
     HTREEITEM addFieldNode(HTREEITEM parent, const std::wstring& text, int lineNum, int fieldIdx, LPARAM lparam);
 
     static INT_PTR CALLBACK dlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);

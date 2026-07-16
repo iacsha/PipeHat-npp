@@ -5,6 +5,7 @@
 #include "SciUtils.h"
 #include "PluginDefs.h"
 #include "TriggerEventDB.h"
+#include "MessageIndex.h"
 #include <string>
 #include <vector>
 #include <cwctype>
@@ -67,7 +68,23 @@ void MessageTreeView::clearTree() {
     }
 }
 
-HTREEITEM MessageTreeView::addSegmentNode(const std::wstring& text, int lineNum, LPARAM lparam) {
+// `parent` is TVI_ROOT for a single-message buffer (the tree stays flat, exactly as
+// before) and the message node when a buffer holds several.
+HTREEITEM MessageTreeView::addSegmentNode(const std::wstring& text, int lineNum, LPARAM lparam,
+                                          HTREEITEM parent) {
+    TVINSERTSTRUCTW tvis;
+    memset(&tvis, 0, sizeof(tvis));
+    tvis.hParent = parent;
+    tvis.hInsertAfter = TVI_LAST;
+    tvis.item.mask = TVIF_TEXT | TVIF_PARAM;
+    tvis.item.pszText = (LPWSTR)text.c_str();
+    tvis.item.lParam = lparam;
+    return (HTREEITEM)SendMessageW(m_hTree, TVM_INSERTITEMW, 0, (LPARAM)&tvis);
+}
+
+// Top-level grouping node for one message in a multi-message buffer. lParam carries
+// line+1 like every other node, so clicking it navigates to that message's MSH.
+HTREEITEM MessageTreeView::addMessageNode(const std::wstring& text, LPARAM lparam) {
     TVINSERTSTRUCTW tvis;
     memset(&tvis, 0, sizeof(tvis));
     tvis.hParent = TVI_ROOT;
@@ -101,28 +118,50 @@ void MessageTreeView::refresh(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrD
     int lineCount = styler.sciGetLineCount();
     if (lineCount <= 0) return;
 
-    // First find MSH to set delimiters
-    bool mshFound = false;
-    for (int li = 0; li < lineCount; li++) {
-        std::wstring wl = getLineW(fnDirect, ptrDirect, li);
-        if (wl.empty()) continue;
-        if (sharedLexer.extractSegmentID(wl.c_str(), (int)wl.size()) == L"MSH") {
-            sharedLexer.parseMSH(wl.c_str(), (int)wl.size());
-            mshFound = true;
-            break;
-        }
-    }
-    if (!mshFound) return;
+    // The buffer may hold many messages (a log or batch file), each declaring its own
+    // delimiters. Build the boundary map once and let it -- not "the first MSH we
+    // happen to find" -- decide which delimiters apply to each line.
+    hl7::MessageIndex index;
+    index.build(lineCount, [fnDirect, ptrDirect](int i) { return getLineW(fnDirect, ptrDirect, i); });
+    if (index.empty()) return;
 
-    // Parse all segments
+    // One message keeps the flat segment tree users already know. Several messages get
+    // a grouping node each, so a 480-message log is navigable instead of being a flat
+    // list of thousands of segments.
+    const bool group = index.count() > 1;
+    HTREEITEM msgParent = TVI_ROOT;
+    int curMsg = -1;
+
     for (int li = 0; li < lineCount; li++) {
         std::wstring wlStr = getLineW(fnDirect, ptrDirect, li);
         if (wlStr.size() < 3) continue;
         const wchar_t* wl = wlStr.c_str();
         int wlLen = (int)wlStr.size();
 
+        // Load this line's own message's delimiters before reading it.
+        sharedLexer.setDelimiters(index.delimitersFor(li));
+
         std::wstring segId = sharedLexer.extractSegmentID(wl, wlLen);
         if (segId.empty()) continue;
+
+        if (group) {
+            int mi = index.indexAt(li);
+            if (mi < 0) {
+                // Envelope/preamble (FHS/BHS/BTS/FTS) belongs to no message: hang it
+                // at the root rather than inside whichever message happens to be open.
+                msgParent = TVI_ROOT;
+                curMsg = -1;
+            } else if (mi != curMsg) {
+                const hl7::MessageSpan* s = index.at((size_t)mi);
+                std::wstring decoded = hl7trig::decodeMSH9(s->type, s->delims.compSep);
+                std::wstring label = std::to_wstring(mi + 1) + L"/" + std::to_wstring(index.count())
+                                   + L"  " + (s->type.empty() ? L"(no MSH-9)" : s->type);
+                if (!s->controlId.empty()) label += L"  [" + s->controlId + L"]";
+                if (!decoded.empty()) label += L"  \x21D2 " + decoded; // ⇒
+                msgParent = addMessageNode(label, (LPARAM)(s->startLine + 1));
+                curMsg = mi;
+            }
+        }
 
         const HL7SegmentDef* segDef = segDB.lookup(segId);
         std::wstring segLabel;
@@ -132,7 +171,7 @@ void MessageTreeView::refresh(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrD
             segLabel = segId + L" \x25B6 (unknown)";
         }
 
-        HTREEITEM segNode = addSegmentNode(segLabel, li, (LPARAM)(li + 1));
+        HTREEITEM segNode = addSegmentNode(segLabel, li, (LPARAM)(li + 1), msgParent);
 
         // Tokenize to find fields
         std::vector<HL7Token> tokens;
