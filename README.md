@@ -167,6 +167,13 @@ uses your changes. The file format is unchanged, so hand-editing and the GUI int
 
 > ⚠️ **MLLP is cleartext.** Messages cross the network **unencrypted** -- PHI included.
 > Use it only over loopback or a trusted network. There is no TLS (MLLP/S) yet.
+>
+> **Need TLS today? Front it with [stunnel](https://www.stunnel.org/).** This is the standard way
+> to add TLS to a protocol that lacks it, and many sites already do it. Point stunnel at your TLS
+> endpoint, have it listen on `127.0.0.1:2575`, and point PipeHat's send host/port at that local
+> listener -- the plaintext hop never leaves the machine. Native TLS is on the roadmap
+> (`docs/06-ROADMAP.md`), deliberately unrushed: a build that says "TLS" while skipping certificate
+> validation would be *worse* than the honest cleartext warning above.
 
 PipeHat can send the active message to an HL7 endpoint and receive inbound messages over
 MLLP (HL7's framing for TCP). It ships **disabled** and opens no sockets until you turn it on

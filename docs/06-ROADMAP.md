@@ -24,7 +24,7 @@ scoped:
 | Z-segment PHI mapping in the GUI | P2 | See below. |
 | Enhanced-mode ACK (MSH-15/16) | P2 | Parsed but not honored; always application ACK. |
 | Listener concurrency | P2 | Services one connection at a time. |
-| TLS / MLLP-S | P2 | No transport encryption; cleartext is flagged in UI and docs. |
+| **TLS / MLLP-S** | **P1** (may become P0) | Promoted from P2 on 2026-07-16. The largest remaining security gap: PHI crosses the wire in cleartext. Sequenced *after* the live third-party MLLP test, because adding TLS before the plain path is proven means debugging two unknowns at once -- **but if the target endpoint is TLS-only, this becomes the P0**, since the live test cannot run without it. Design and reasoning below. Interim answer that works today: **stunnel**. |
 | Component/subcomponent tree depth | P2 | Tree is field-level only. |
 | Conformance in tooltips + tree problem-list | P2 | Violations currently surface only as squiggles + a report dialog. |
 | Auto-download + swap update | P2 | A loaded DLL can't overwrite itself -- needs a helper/restart step. Opt-in check-on-startup also open. |
@@ -87,6 +87,51 @@ The check now tracks the separator itself: MSH-1 IS the field separator, so the 
 `MSH` can be read straight off the line with no help from the lexer or the index. Both failure
 directions are covered -- too-narrow splitting cries wolf (which trains you to ignore the check),
 shared-wrong splitting reports false cleanliness (the leak).
+
+### TLS / MLLP-S -- P1 (promoted from P2, 2026-07-16)
+
+MLLP is cleartext: PHI crosses the network unencrypted. This is the biggest remaining security
+gap in the product, and healthcare networks increasingly require TLS for HL7 -- especially any
+path that is not inside a hospital LAN or a VPN.
+
+**The trap, and the reason this must not be rushed.** Encryption is not the hard part;
+**certificate validation is**. A build that says "TLS" while accepting any certificate is *worse
+than the cleartext we ship today*, because today's cleartext announces itself and gets a warning
+dialog. A TLS checkbox next to an unvalidated connection is a lie the user cannot see through.
+
+This bites immediately in practice: **test HL7 endpoints almost universally use self-signed
+certificates**, so the first thing a user hits is a validation failure, and the tempting fix is a
+"skip certificate validation" checkbox that then stays ticked forever. That is how a TLS feature
+rots into decoration. If we offer that escape hatch it must be gated exactly like the
+cleartext-PHI confirmation: off by default, explicit, loud, re-confirmed per session, never
+silent, and logged.
+
+**Use SChannel, not OpenSSL.** PipeHat's "no runtime dependencies beyond the NPP/Scintilla host"
+property is a real virtue -- install is *copy one DLL*. OpenSSL means shipping DLLs, owning a CVE
+surface, and tracking upstream advisories for a plugin whose only update path is "check GitHub".
+SChannel ships with Windows, uses the system trust store (so an organization's internal CA already
+works), and inherits OS patching. The cost is that SSPI is genuinely unpleasant --
+`InitializeSecurityContext` loops and manual buffer management, roughly 500-800 lines of fiddly
+code. Worth it. `MllpTransport` is already isolated behind `sendSync` / `Listener`, which is the
+seam to slot it into; `MllpProtocol.h` (pure framing) should not change at all.
+
+**Client first, server later.** These are not equal work:
+- **Sender (Send + Replay)** is the common case and much simpler: connect, validate the server
+  cert, send. No provisioning. This is what points at a TLS-enabled Mirth channel.
+- **Listener** needs a certificate, which forces "where does it come from?" -- cert store picker,
+  self-signed generation, PFX import -- plus real key handling. PipeHat is a *test tool*: far more
+  often the client than the server.
+- **Mutual TLS (client certificate) is a real requirement** at many healthcare endpoints, not an
+  afterthought. It is phase two of the sender, ahead of any listener work.
+
+**Shape:** a security dropdown in Settings -> MLLP -- `None` / `TLS` / `TLS + client certificate`
+-- with hostname verification on by default and a separate, loudly-gated "accept self-signed"
+opt-in for test endpoints.
+
+**Interim answer, documented today: stunnel.** Fronting MLLP with stunnel is the standard way to
+add TLS to a protocol that lacks it, and many shops already do it. Point PipeHat at
+`localhost:2575` and let stunnel terminate TLS outbound. Zero code, works now, and it is the right
+advice for anyone who needs this before the feature lands.
 
 ### Field population profiler -- P1
 
