@@ -12,8 +12,16 @@ scoped:
 | Item | Priority | Notes |
 |------|----------|-------|
 | Live third-party MLLP test | **P0** | Send/receive is verified over loopback in NPP, not yet against a real endpoint (Mirth/BridgeLink). The one claim in the docs that rests on inference rather than a test. |
+| **Multi-message file support** | **P1** | See below -- part correctness bug, not just a feature. |
+| **Replay a file to an endpoint** + MSH-10/MSH-7 refresh | **P1** | See below. |
+| **Field population profiler** | **P1** | See below. |
 | C5-ui -- disk/backup residue warning | P1 | The last unshipped item from the original PHI review: warn that the on-disk original and Notepad++'s `backup\` snapshots may retain pre-scrub PHI. |
 | **Data-driven segment/PHI tables** | **P1** | Generate `SegmentDB`/PHI maps from HAPI/nHapi metadata instead of hand-curating. **C6 is the argument**: nine PHI-bearing segments were unreachable for months because the tables are hand-written and nothing cross-checks them against the spec. This removes the bug class, not the instance, and closes M8 by construction. Pair with a coverage audit -- C6 was found by luck, and we do not currently know what else is missing from the PHI map. |
+| Encoding doctor | P2 | See below. |
+| Embedded document extraction (OBX-5) | P2 | See below. |
+| Field editing helpers | P2 | See below. |
+| HL7 standard tables (0001, 0003, 0076...) | P2 | See below. |
+| Z-segment PHI mapping in the GUI | P2 | See below. |
 | Enhanced-mode ACK (MSH-15/16) | P2 | Parsed but not honored; always application ACK. |
 | Listener concurrency | P2 | Services one connection at a time. |
 | TLS / MLLP-S | P2 | No transport encryption; cleartext is flagged in UI and docs. |
@@ -26,6 +34,129 @@ scoped:
 **Closed as already done** (this doc had drifted from the code): L9 `.hl7` activation
 (`currentPathHasHl7Ext`), L11 tree-nav off-by-one, and retiring the fixed-buffer
 `ScintillaStyler::sciGetLine` -- all verified present/absent in the source on 2026-07-16.
+
+---
+
+## Proposed features (2026-07-16 planning pass)
+
+### Multi-message file support -- P1
+
+**PipeHat currently has no concept of a message boundary.** `MessageTreeView::refresh` finds
+the *first* MSH, takes delimiters from it, then flattens every segment in the buffer into one
+tree. `FHS`/`BHS` appear only in `detectHL7` for activation -- they are never used as batch
+structure.
+
+Interface engineers do not get one message, they get a log or batch file with hundreds. Today
+that is a flat tree of thousands of segments with no grouping, and -- more seriously --
+**delimiters read from the first MSH are applied to the whole file**, so a mixed-vendor log
+where message #200 declares different encoding characters is silently mis-parsed. This is a
+correctness gap hiding inside a missing feature, which is why it outranks the rest.
+
+Scope: message navigator (next/prev, "message 12 of 480"), per-message tree grouping,
+per-message delimiter scope, extract-message-to-new-tab, and real `FHS`/`BHS`/`BTS`/`FTS`
+batch-envelope handling.
+
+**Open design decision:** per-message lexer state vs. re-parsing MSH at each boundary. The
+tokenizer is currently one-line-at-a-time and stateless apart from `m_delimiters`, so the
+cheap version is "re-`parseMSH` when a boundary is crossed" -- but every caller that scans
+line-by-line (styler, tree, scrub, conformance, validate) would need to honor boundaries, or
+they will disagree. Given C6, **a split between what the lexer thinks and what a consumer
+thinks is exactly the bug class to design out up front.**
+
+### Replay a file to an endpoint (+ control-ID refresh) -- P1
+
+Send a *file* of messages to a host at N msg/sec rather than one message. Most of the
+transport work is already done by v2.0.0's MLLP layer; this turns PipeHat into a
+regression/load harness for a Mirth channel.
+
+**The prerequisite matters more than the feature: refresh MSH-10 and MSH-7 on send.**
+Receivers deduplicate on control ID -- replaying the same message with the same MSH-10 means
+a real engine may accept it once and silently drop the rest, which looks exactly like a broken
+interface. Worth shipping as its own command even before replay exists.
+
+### Field population profiler -- P1
+
+Run across N messages and report which fields are *ever* populated, how often, and with what
+value distribution ("does this vendor actually send PID-19? what values appear in PV1-2?").
+That is the interface-discovery question on every new integration, and it is pure analysis over
+machinery that already exists. Depends on multi-message support.
+
+### Encoding doctor -- P2
+
+CR vs LF vs CRLF segment terminators, BOM, non-printable characters, and an MSH-18 charset that
+disagrees with the actual bytes. Perennial real-world interface pain, and squarely an editor's
+job.
+
+### Embedded document extraction -- P2
+
+`OBX-5` carrying a base64 PDF/RTF/CDA: extract and save/open it. The codebase already treats
+this as the pathological long-line case (see `CLAUDE.md`), so it may as well be a feature.
+Note this is also the *only* legitimate way other document formats enter PipeHat -- as
+payloads inside v2, not as peer formats (see Scope boundaries).
+
+### Field editing helpers -- P2
+
+Insert/delete a field with correct pipe counting; escape/unescape a value. Hand-editing HL7 is
+miserable precisely *because* you are counting pipes, and this is the thing a text-editor
+plugin is uniquely positioned to fix.
+
+### HL7 standard tables -- P2
+
+Built-in HL7 tables (0001 gender, 0003 event type, 0076 message type, ...) to decode coded
+values beyond MSH-9/EVN-1, and to let a conformance rule reference a table instead of a
+hand-typed value list. Natural companion to data-driven tables.
+
+### Z-segment PHI mapping in the GUI -- P2
+
+Z-segments are currently scrubbed wholesale (`isZSegment` -> replace every field). Safe, but
+blunt: it destroys non-PHI Z data you may need to keep, and Z-segment layouts are site-specific
+by definition, so the mapping belongs in the editable profile rather than compiled in.
+
+---
+
+## Scope boundaries -- considered and declined
+
+Recorded so they are not re-litigated. Revisit only with a specific reason.
+
+**FHIR (v2 -> FHIR conversion / FHIR resource view)** -- deferred 2026-07-16, *not* rejected on
+merit. It is the most strategically interesting item on this page and the closest to the real
+problem (legacy v2 and modern FHIR fragmentation). It is also a different product: a resource
+model, a serializer, and a mapping layer, none of which reuse the delimiter tokenizer that is
+PipeHat's engine. Decision: out of scope **at this time**; if taken up, it defines a next act
+rather than a next feature.
+
+**X12 EDI (837/835/270/271)** -- the only declined format with a real architectural case.
+Structurally it is the same shape as HL7 v2: self-declaring delimiters in the ISA envelope
+(as MSH does), segment ID + delimited elements + components. Tokenizer, tree, dictionary
+tooltips, conformance rules, and PHI mapping keyed on (segment, element) would all map nearly
+1:1. Declined anyway because:
+- **Identity.** PipeHat is named after `|^~\&`. "HL7 v2.x for Notepad++" is a crisp promise;
+  "healthcare EDI viewer" is a different product with a different name.
+- **Licensing.** X12 implementation guides (TR3s) are commercially licensed -- their content
+  cannot simply be embedded the way HL7 v2 structure can.
+- **Audience.** v2 is clinical interface work; X12 is revenue cycle. The overlap is thinner
+  than the structural similarity suggests.
+- **C6.** Our hand-curated tables already have unknown gaps. Doubling the table surface before
+  fixing *how tables are produced* is backwards.
+If it ever happens, the right shape is a sibling plugin sharing the tokenizer -- not a PipeHat
+mode.
+
+**HL7 v2 XML encoding** -- same data model, entirely different parser (nothing reuses the
+tokenizer), and Notepad++ already highlights XML. Cheap and honest alternative: *detect* v2 XML
+and say so, rather than mis-highlighting it as delimited v2.
+
+**CDA / C-CDA** -- XML, template-driven, an order of magnitude larger than v2 structure. A
+different tool. (Reachable as an OBX-5 payload via embedded document extraction, which is the
+right level of support.)
+
+**CSV / fixed-width flat files** -- common as interface counterparts, but generic: there is no
+data dictionary, no segment grammar, and no PHI map to bring. Existing CSV plugins do this
+better, and PipeHat would add nothing but a menu entry.
+
+**ASTM E1381/E1394** -- lab-instrument framing, structurally close to MLLP, but niche and
+declining. Revisit only on a concrete request.
+
+**DICOM** -- binary, not text. Not an editor's problem.
 
 ## Legend
 
