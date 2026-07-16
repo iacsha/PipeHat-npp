@@ -51,6 +51,7 @@ The plugin activates automatically on HL7 **content** (first non-blank segment i
 | `Ctrl+Alt+Shift+G` | Toggle folding | `Ctrl+Alt+Shift+E` | Enable HL7 highlighting |
 | `Ctrl+Alt+Shift+<-` / `->` | Previous / next field | `Ctrl+Alt+Shift+P` | Settings |
 | `Ctrl+Alt+Shift+M` | Send message (MLLP) | `Ctrl+Alt+Shift+L` | Toggle MLLP listener |
+| `Ctrl+Alt+Shift+Y` | Replay all messages (MLLP) | `Ctrl+Alt+Shift+PgDn` / `PgUp` | Next / previous message |
 | `Ctrl+Alt+Shift+K` | Copy field path | `Ctrl+Alt+Shift+W` | Copy as rich text |
 
 All combos include **Shift** deliberately -- plain `Ctrl+Alt+letter` collides with
@@ -176,6 +177,23 @@ in **Settings -> MLLP**.
 - **Toggle MLLP Listener** (`Ctrl+Alt+Shift+L`) -- starts/stops an MLLP server. Each inbound
   message is auto-acknowledged (`AA`) and opened in a tab (colored like any HL7 buffer). The menu
   item shows a checkmark while listening.
+- **Replay All Messages (MLLP)** (`Ctrl+Alt+Shift+Y`) -- sends **every message in the buffer, one
+  MLLP frame per message**, and reports accepted / rejected / no-ACK / failed counts. This is the
+  difference between an interface test and an echo: *Send Message* frames the whole buffer as a
+  single message, so a 5-message log arrives as one blob with one ACK, while a real receiver
+  frames and ACKs per message. Point it at a Mirth channel and it is a regression harness.
+  - Replay offers to **refresh MSH-10 (control id) and MSH-7 (datetime)** on each message, and
+    you should almost always say yes: receivers deduplicate on control id, so replaying captured
+    messages with their original ids gets them accepted once and **silently discarded** on every
+    later run -- a test that reports success while delivering nothing.
+
+### Multi-message files
+
+A buffer may hold many messages (a log or batch file), and **each message's own MSH delimiters
+are used to parse it** -- a `!`-separated message sitting after a `|`-separated one is read
+correctly. The tree groups by message (`12/480  ADT^A01  [MSG012]`), envelope segments
+(`FHS`/`BHS`/`BTS`/`FTS`) sit outside any message, and `Ctrl+Alt+Shift+PgDn` / `PgUp` step
+between messages reporting "Message 12 of 480".
 
 **Saving received messages is OFF by default.** Inbound messages open as in-memory tabs only --
 no PHI touches disk. If you enable *Save received messages to disk* in **Settings -> MLLP**, each

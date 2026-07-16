@@ -12,9 +12,9 @@ scoped:
 | Item | Priority | Notes |
 |------|----------|-------|
 | Live third-party MLLP test | **P0** | Send/receive is verified over loopback in NPP, not yet against a real endpoint (Mirth/BridgeLink). The one claim in the docs that rests on inference rather than a test. |
-| **Multi-message file support** | **P1** | See below -- part correctness bug, not just a feature. |
-| **Replay a file to an endpoint** + MSH-10/MSH-7 refresh | **P1** | See below. |
-| **Field population profiler** | **P1** | See below. |
+| ~~Multi-message file support~~ | ✅ done | MessageIndex is the single source of truth for boundaries + per-message delimiters; all eight former parseMSH sites migrated (parseMSH now has exactly one caller). Tree groups by message, Ctrl+Alt+Shift+PgDn/PgUp navigate. Verified in NPP on a 5-message file including a '!'-delimited message. Remaining: extract-message-to-new-tab. |
+| ~~Replay a file to an endpoint~~ + MSH-10/MSH-7 refresh | ✅ done | Replay All Messages (Ctrl+Alt+Shift+Y): one MLLP frame per message, per-message ACK, accepted/rejected/noAck/failed report. Offers MSH-10/MSH-7 refresh (MessageRefresh.h, standalone-tested). Remaining: rate limiting (sends back to back). |
+| **Field population profiler** | **P1** | See below. Now unblocked -- MessageIndex supplies the per-message iteration it needs. |
 | C5-ui -- disk/backup residue warning | P1 | The last unshipped item from the original PHI review: warn that the on-disk original and Notepad++'s `backup\` snapshots may retain pre-scrub PHI. |
 | **Data-driven segment/PHI tables** | **P1** | Generate `SegmentDB`/PHI maps from HAPI/nHapi metadata instead of hand-curating. **C6 is the argument**: nine PHI-bearing segments were unreachable for months because the tables are hand-written and nothing cross-checks them against the spec. This removes the bug class, not the instance, and closes M8 by construction. Pair with a coverage audit -- C6 was found by luck, and we do not currently know what else is missing from the PHI map. |
 | Encoding doctor | P2 | See below. |
@@ -73,6 +73,20 @@ regression/load harness for a Mirth channel.
 Receivers deduplicate on control ID -- replaying the same message with the same MSH-10 means
 a real engine may accept it once and silently drop the rest, which looks exactly like a broken
 interface. Worth shipping as its own command even before replay exists.
+
+
+### Coverage-check independence -- resolved 2026-07-16
+
+When the scrub moved onto MessageIndex, the anonymize coverage check briefly took its field
+separator from that same index -- reintroducing the C6 shape in the safety net, since a wrong
+boundary would make both passes split identically, agree, and report clean. The concrete risk is
+real: an OBX-5 embedded document whose payload contains a line starting with `MSH|` would forge a
+boundary.
+
+The check now tracks the separator itself: MSH-1 IS the field separator, so the character after
+`MSH` can be read straight off the line with no help from the lexer or the index. Both failure
+directions are covered -- too-narrow splitting cries wolf (which trains you to ignore the check),
+shared-wrong splitting reports false cleanliness (the leak).
 
 ### Field population profiler -- P1
 

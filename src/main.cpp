@@ -21,6 +21,7 @@
 #include "ConformanceProfile.h"
 #include "Validator.h"
 #include "MessageIndex.h"
+#include "MessageRefresh.h"
 #include "MessageDiff.h"
 #include "SettingsDialog.h"
 #include "MllpConfig.h"
@@ -41,6 +42,7 @@
 #define WM_MLLP_ACK_RESULT (WM_APP + 2)  // lParam = new mllpnet::SendResult*
 #define WM_UPDATE_RESULT   (WM_APP + 3)  // lParam = new updatecheck::Result*
 #define WM_PIPEHAT_RESTYLE (WM_APP + 4)  // deferred re-style after buffer activation settles
+#define WM_MLLP_REPLAY_DONE (WM_APP + 5) // lParam = new ReplaySummary*
 
 // ── Global state ──
 static NppData g_nppData;
@@ -131,7 +133,7 @@ static int g_healCount = 0;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[22];
+static FuncItem g_funcItems[23];
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -145,6 +147,7 @@ static ShortcutKey g_skValidate;
 static ShortcutKey g_skCompare;
 static ShortcutKey g_skSettings;
 static ShortcutKey g_skMllpSend;
+static ShortcutKey g_skMllpReplay;
 static ShortcutKey g_skMllpListen;
 static ShortcutKey g_skCopyPath;
 static ShortcutKey g_skCopyRtf;
@@ -497,18 +500,27 @@ static void cmdScrubPHI() {
     // than report clean.
     int coverageMisses = 0;
     {
+        // Delimiter tracking that owes NOTHING to the lexer or MessageIndex. MSH-1 IS
+        // the field separator, so the character right after "MSH" is the separator by
+        // definition -- this pass can read it straight off the line.
+        //
+        // This independence is the point. Asking MessageIndex would make the safety net
+        // share a dependency with the thing it audits: a wrong boundary (say, an OBX-5
+        // embedded document whose payload contains a line starting with "MSH|") would
+        // make both passes split the same wrong way, agree, and report clean. That is
+        // exactly how C6 hid. Two failure directions matter here: too-narrow splitting
+        // reports false coverage gaps (crying wolf trains you to ignore the check);
+        // shared-wrong splitting reports false cleanliness (the leak).
+        wchar_t rawFieldSep = HL7Delimiters{}.fieldSep;   // '|' until an MSH says otherwise
+
         for (int li = 0; li < lineCount; li++) {
             std::wstring wl = getLineW(fn, ptr, li);
             if (wl.size() < 3) continue;
             std::wstring segId = rawSegmentID(wl);
             if (segId.empty()) continue;
 
-            // Per-message separator, same as the scrub pass. Splitting a '!'-separated
-            // message on '|' would find one giant field, so every PHI field in it would
-            // read as "not covered" and the check would cry wolf on a correct scrub --
-            // the mirror image of the C6 failure, and just as corrosive: a safety net
-            // that fires constantly gets ignored, then it is not a safety net either.
-            wchar_t fieldSep = index.delimitersFor(li).fieldSep;
+            if (segId == L"MSH" && wl.size() > 3) rawFieldSep = wl[3];
+            wchar_t fieldSep = rawFieldSep;
             bool isMSH = (segId == L"MSH");
             bool isZ = (segId[0] == L'Z');
 
@@ -795,6 +807,18 @@ static bool isNewerVersion(const std::wstring& latest, const std::wstring& cur) 
     return c1 > c2;
 }
 
+// Outcome of a replay run, marshaled from the worker thread back to the UI thread.
+struct ReplaySummary {
+    int total = 0;          // messages the buffer contained
+    int sent = 0;           // frames actually written
+    int accepted = 0;       // positive ACK (AA/CA)
+    int rejected = 0;       // negative ACK (AE/AR/CE/CR)
+    int noAck = 0;          // sent, nothing came back
+    int failed = 0;         // never connected
+    bool refreshed = false; // MSH-10/MSH-7 rewritten
+    std::string firstError; // first connect/send error, for the report
+};
+
 // Hidden message-only window: runs on the UI thread so inbound messages and ACK
 // results posted from worker/listener threads are handled where it's safe to
 // touch Notepad++.
@@ -920,6 +944,38 @@ static LRESULT CALLBACK mllpWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
             return 0;
         }
+        case WM_MLLP_REPLAY_DONE: {
+            ReplaySummary* s = (ReplaySummary*)l;
+            if (s) {
+                std::wstring msg = L"Replayed " + std::to_wstring(s->sent) + L" of " +
+                                   std::to_wstring(s->total) + L" message(s).\r\n\r\n";
+                msg += L"Accepted (AA/CA):\t" + std::to_wstring(s->accepted) + L"\r\n";
+                if (s->rejected) msg += L"Rejected (AE/AR):\t" + std::to_wstring(s->rejected) + L"\r\n";
+                if (s->noAck)    msg += L"No ACK:\t\t"        + std::to_wstring(s->noAck) + L"\r\n";
+                if (s->failed)   msg += L"Connect failed:\t"  + std::to_wstring(s->failed) + L"\r\n";
+                msg += L"\r\nControl IDs: ";
+                msg += s->refreshed ? L"refreshed (MSH-10/MSH-7 rewritten)"
+                                    : L"sent as-is \x2014 duplicates may be silently dropped by the receiver";
+                if (!s->firstError.empty()) msg += L"\r\n\r\nFirst error: " + utf8ToW(s->firstError);
+
+                // Anything short of "every message accepted" is a warning: a replay that
+                // half-lands is the failure mode this feature exists to expose.
+                bool clean = (s->failed == 0 && s->noAck == 0 && s->rejected == 0 &&
+                              s->accepted == s->total);
+                MessageBoxW(g_nppData._nppHandle, msg.c_str(), L"PipeHat MLLP \x2014 Replay",
+                            MB_OK | (clean ? MB_ICONINFORMATION : MB_ICONWARNING));
+
+                logEvent(L"MLLP", L"Replay result: sent=" + std::to_wstring(s->sent) +
+                                  L"/" + std::to_wstring(s->total) +
+                                  L" accepted=" + std::to_wstring(s->accepted) +
+                                  L" rejected=" + std::to_wstring(s->rejected) +
+                                  L" noAck=" + std::to_wstring(s->noAck) +
+                                  L" failed=" + std::to_wstring(s->failed) +
+                                  L" refresh=" + (s->refreshed ? L"yes" : L"no"));
+                delete s;
+            }
+            return 0;
+        }
         case WM_UPDATE_RESULT: {
             updatecheck::Result* ur = (updatecheck::Result*)l;
             if (ur) {
@@ -965,6 +1021,114 @@ static void createMllpWindow() {
 // Send the active message to the configured host:port over MLLP, on a worker
 // thread so a slow/hung endpoint can't freeze Notepad++. Result is marshaled
 // back to the UI thread for display.
+// Replay every message in the buffer to the configured endpoint, ONE MLLP FRAME PER
+// MESSAGE.
+//
+// This is the difference between a real interface test and an echo: cmdMllpSend frames
+// the whole buffer as a single message, so a 5-message log arrives as one blob and gets
+// one ACK. A real receiver frames per message and ACKs per message. Replay is what turns
+// PipeHat into a regression harness you can point at a Mirth channel.
+static void cmdMllpReplay() {
+    if (!g_mllp.enabled) {
+        MessageBoxW(g_nppData._nppHandle,
+            L"MLLP networking is disabled.\r\n\r\nEnable it in Settings (Ctrl+Alt+Shift+P) \x2192 "
+            L"MLLP, then try again.", L"PipeHat MLLP",
+            MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
+        return;
+    }
+    ScintillaView& view = getCurrentView();
+    if (!view.fnDirect) {
+        MessageBoxW(g_nppData._nppHandle, L"No document is active.",
+                    L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    SciFnDirect fn = view.fnDirect;
+    sptr_t ptr = view.ptrDirect;
+
+    // MessageIndex already knows where every message starts and ends -- the same map
+    // the tree and the scrubber use. Replay is mostly a consequence of having it.
+    hl7::MessageIndex index = buildIndex(fn, ptr);
+    if (index.empty()) {
+        MessageBoxW(g_nppData._nppHandle,
+            L"No HL7 messages found in this buffer.\r\n\r\nReplay needs at least one MSH.",
+            L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    if (!confirmCleartextOnce()) return;
+
+    // Build one wire message per span, joining segments with CR (the HL7 terminator).
+    std::vector<std::string> messages;
+    messages.reserve(index.count());
+    for (const auto& span : index.spans()) {
+        std::string msg;
+        for (int li = span.startLine; li <= span.endLine; li++) {
+            std::wstring wl = getLineW(fn, ptr, li);
+            while (!wl.empty() && (wl.back() == L'\r' || wl.back() == L'\n')) wl.pop_back();
+            if (wl.empty()) continue;
+            msg += wToUtf8(wl);
+            msg.push_back('\r');
+        }
+        if (!msg.empty()) messages.push_back(msg);
+    }
+    if (messages.empty()) {
+        MessageBoxW(g_nppData._nppHandle, L"The messages in this buffer are empty.",
+                    L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    // Refreshing MSH-10 is the default for a reason: receivers dedupe on control id, so
+    // replaying original ids means the second run is accepted once and silently dropped
+    // -- a test that reports success while delivering nothing.
+    std::wstring prompt =
+        L"Replay " + std::to_wstring(messages.size()) + L" message(s) to " +
+        g_mllp.host + L":" + std::to_wstring(g_mllp.sendPort) +
+        L"?\r\n\r\nEach message is sent as its own MLLP frame and ACKed separately."
+        L"\r\n\r\nYes\t- refresh MSH-10 (control id) and MSH-7 (datetime) on each"
+        L"\r\n\tRecommended: receivers deduplicate on control id, so replaying the"
+        L"\r\n\toriginal ids can be silently discarded as duplicates."
+        L"\r\nNo\t- send exactly as-is"
+        L"\r\nCancel\t- do nothing";
+    int mode = MessageBoxW(g_nppData._nppHandle, prompt.c_str(), L"PipeHat \x2014 Replay Messages",
+                           MB_YESNOCANCEL | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST);
+    if (mode == IDCANCEL) return;
+    bool refresh = (mode == IDYES);
+
+    if (refresh) {
+        std::string stamp = hl7refresh::nowStamp();
+        for (size_t i = 0; i < messages.size(); i++)
+            messages[i] = hl7refresh::refresh(messages[i], stamp,
+                                              hl7refresh::makeControlId(stamp, (int)i + 1));
+    }
+
+    std::string host = wToUtf8(g_mllp.host);
+    unsigned short port = (unsigned short)g_mllp.sendPort;
+    logEvent(L"MLLP", L"Replay initiated: " + std::to_wstring(messages.size()) +
+                      L" message(s) to " + g_mllp.host + L":" + std::to_wstring(g_mllp.sendPort) +
+                      L", refresh=" + (refresh ? L"yes" : L"no"));
+
+    HWND target = g_hMllpWnd;
+    std::thread([host, port, messages, refresh, target]() {
+        ReplaySummary s;
+        s.total = (int)messages.size();
+        s.refreshed = refresh;
+        for (const auto& m : messages) {
+            mllpnet::SendResult r = mllpnet::sendSync(host, port, m, 10000);
+            if (!r.connected) {
+                s.failed++;
+                if (s.firstError.empty()) s.firstError = r.error;
+                continue;               // endpoint is down; keep counting rather than half-reporting
+            }
+            s.sent++;
+            if (!r.gotAck) { s.noAck++; continue; }
+            mllp::ParsedAck pa = mllp::parseAck(r.ack);
+            if (mllp::isPositiveAck(pa.code)) s.accepted++; else s.rejected++;
+        }
+        if (target) PostMessageW(target, WM_MLLP_REPLAY_DONE, 0, (LPARAM)new ReplaySummary(s));
+    }).detach();
+}
+
 static void cmdMllpSend() {
     if (!g_mllp.enabled) {
         MessageBoxW(g_nppData._nppHandle,
@@ -1947,6 +2111,7 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skCompare    = { true, true, true, 'D' };             // Ctrl+Alt+Shift+D  -- compare the two views
     g_skSettings   = { true, true, true, 'P' };             // Ctrl+Alt+Shift+P  -- settings
     g_skMllpSend   = { true, true, true, 'M' };             // Ctrl+Alt+Shift+M  -- MLLP send message
+    g_skMllpReplay = { true, true, true, 'Y' };             // Ctrl+Alt+Shift+Y  -- replay all messages
     g_skMllpListen = { true, true, true, 'L' };             // Ctrl+Alt+Shift+L  -- MLLP listener toggle
     g_skCopyPath   = { true, true, true, 'K' };             // Ctrl+Alt+Shift+K  -- copy field path
     g_skCopyRtf    = { true, true, true, 'W' };             // Ctrl+Alt+Shift+W  -- copy as rich text
@@ -2057,6 +2222,13 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_funcItems[g_nbFuncItems]._pShKey = &g_skMllpSend;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Replay All Messages (MLLP)");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdMllpReplay;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skMllpReplay;
     g_nbFuncItems++;
 
     g_mllpListenerItemIdx = g_nbFuncItems;
