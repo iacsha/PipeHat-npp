@@ -30,6 +30,10 @@ scoped:
 | Auto-download + swap update | P2 | A loaded DLL can't overwrite itself -- needs a helper/restart step. Opt-in check-on-startup also open. |
 | `nppPluginList` listing | P2 | Would make PipeHat installable via Notepad++'s PluginAdmin. |
 | Dockable live log panel | P2 | Event log is a file today (menu: Open Event Log). |
+| **Configurable listener ACK/NAK** | **P1** | Listener always returns application-accept (AA). Make the response selectable -- AA/AE/AR, plus delay and drop -- to test *sender* error handling and retry. See below. |
+| **Message generator + template library** | **P1** | Build a fresh `ADT^A01` / `ORU^R01` from a template instead of hunting for a sample. Pairs with MLLP send. See below. |
+| Human-readable / clinical summary view | P2 | Narrative render of a parsed message for non-integration readers. See below. |
+| Encounter timeline | P2 | Order a batch by MSH-7 and show one patient's event flow. Depends on multi-message (now shipped). See below. |
 
 **Closed as already done** (this doc had drifted from the code): L9 `.hl7` activation
 (`currentPathHasHl7Ext`), L11 tree-nav off-by-one, and retiring the fixed-buffer
@@ -170,6 +174,82 @@ hand-typed value list. Natural companion to data-driven tables.
 Z-segments are currently scrubbed wholesale (`isZSegment` -> replace every field). Safe, but
 blunt: it destroys non-PHI Z data you may need to keep, and Z-segment layouts are site-specific
 by definition, so the mapping belongs in the editable profile rather than compiled in.
+
+---
+
+## Proposed features (2026-07-18 planning pass)
+
+Four test-tool features that extend what v2.0/v2.1 already shipped rather than opening new
+surface. The first two are the strategic pair -- they turn the MLLP layer and the message
+model from "view and send" into "generate and exercise."
+
+### Configurable listener ACK/NAK -- P1
+
+Today the listener always returns an application-accept (AA). That verifies the happy path
+and nothing else. Real interface testing is mostly about the *unhappy* path: does the sending
+system retry on AR, alarm on AE, back off, or silently drop? PipeHat is uniquely placed to be
+the controllable receiver that provokes those behaviors.
+
+Scope: a response mode selectable in Settings -> MLLP (and ideally per-session togglable
+without reopening the dialog) --
+
+- **AA / AE / AR** -- application accept, error, reject. AE/AR should let the user supply the
+  MSA-3 text and optional ERR segment so the sender sees a realistic rejection.
+- **Delay** -- hold N milliseconds before ACKing, to test sender timeouts.
+- **Drop** -- accept the connection, never ACK, to test the sender's no-response handling.
+
+This is distinct from the existing P2 "enhanced-mode ACK (MSH-15/16)" item -- that is about
+*honoring* the sender's requested ACK level; this is about *choosing what we send back*. They
+compose: enhanced-mode governs whether we ACK at all, this governs what the ACK says.
+
+Isolation note: the response decision belongs in the `main.cpp` marshaling glue (or the
+handler callback), not in `MllpProtocol.h`. `buildAck` already takes an ack code -- the work
+is surfacing the choice, not new framing. Keep `MllpProtocol.h` pure.
+
+### Message generator + template library -- P1
+
+Interface work constantly needs *a* message -- to send at a new endpoint, to reproduce a bug,
+to seed a conformance rule -- and today you go find one in a log and hand-edit it. A template
+library plus a generator removes that step.
+
+Scope: a set of bundled starter templates for the common trigger events (`ADT^A01/A03/A08`,
+`ORU^R01`, `ORM^O01`, `SIU^S12`, `MDM^T02`, `DFT^P03`) with placeholder fields; a command to
+insert one into a new buffer with MSH-7 (now) and MSH-10 (fresh control ID) auto-filled --
+reusing `MessageRefresh.h`, which already does exactly that for replay. Templates live as
+editable files in the config dir (like `PipeHat.profile`), so a user can save the shape of
+their own interface as a reusable template.
+
+Natural pairings: **MLLP send** (generate -> fire), **conformance profiles** (generate a
+message that satisfies/violates a profile), and the **field population profiler** (turn an
+observed field distribution into a representative template). Explicitly *not* a synthetic-data
+engine -- placeholders are obvious placeholders, so a generated message is never mistaken for
+real PHI.
+
+### Human-readable / clinical summary view -- P2
+
+Render a parsed message as a short narrative -- "ADT^A08 update: patient DOE, John (MRN
+...), admitted 2026-07-18 to ICU, attending Dr. Smith" -- for the times a message has to be
+legible to someone who does not read `|^~\&`. This is the HL7Soup-style summary feature.
+
+Pure display over the existing lexer + `SegmentDB` + `TriggerEventDB`; no parser change.
+Surface as a read-only panel or a hover/expand over the whole message. Scope carefully: a few
+high-value segments (MSH, EVN, PID, PV1, and the order/result spine for ORU/ORM) rendered
+well beats a full transcription. PHI-bearing by nature -- it is a *view*, never written to
+disk or logged.
+
+### Encounter timeline -- P2
+
+Given a batch/log file, order its messages by MSH-7 and present the event flow of a single
+encounter: register -> admit -> transfer -> orders -> results -> discharge. Depends on
+multi-message support, which now ships (MessageIndex), so the per-message iteration and
+per-message delimiter scope already exist.
+
+Scope: sort by MSH-7, group by a chosen key (PID-3 / PV1-19 visit number), and show each
+message as a row (time, type + trigger decode, one-line summary from the clinical-summary
+view above -- these two features share a renderer). Clicking a row navigates the editor to
+that message, reusing the tree's existing navigate-to-line path. A filter ("this visit
+only") is the same query the unbuilt batch-search feature would use -- worth keeping that
+seam in mind even though search itself is not on this pass.
 
 ---
 
