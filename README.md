@@ -36,6 +36,11 @@ knows by heart.
   messages), and **folding** to collapse detail-segment groups (OBX/NTE under their parent).
 - **Version & escape decoding** -- MSH-12 shows the HL7 version + era; escape sequences
   (`\F\ \S\ \T\ \Xhh\` …) are decoded on hover.
+- **External transform providers** -- run the active message through any transformation
+  engine and see the result in the other view, diffed field by field. PipeHat knows one
+  contract (stdin in, stdout out, exit code) and nothing about any vendor, so an
+  InterSystems IRIS wrapper, a Mirth JavaScript runner, and an XSLT processor are all
+  just lines in `PipeHat.providers`.
 
 The plugin activates automatically on HL7 **content** (first non-blank segment is `MSH`,
 `FHS`, or `BHS`) or a **`.hl7` file**. You can also force it on any buffer with
@@ -53,6 +58,7 @@ The plugin activates automatically on HL7 **content** (first non-blank segment i
 | `Ctrl+Alt+Shift+M` | Send message (MLLP) | `Ctrl+Alt+Shift+L` | Toggle MLLP listener |
 | `Ctrl+Alt+Shift+Y` | Replay all messages (MLLP) | `Ctrl+Alt+Shift+PgDn` / `PgUp` | Next / previous message |
 | `Ctrl+Alt+Shift+K` | Copy field path | `Ctrl+Alt+Shift+W` | Copy as rich text |
+| `Ctrl+Alt+Shift+X` | Transform with... (pick provider) | `Ctrl+Alt+Shift+A` | Transform again (last provider) |
 
 All combos include **Shift** deliberately -- plain `Ctrl+Alt+letter` collides with
 Notepad++ defaults and gets grabbed by other software (graphics drivers, AltGr

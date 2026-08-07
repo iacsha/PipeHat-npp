@@ -4,6 +4,90 @@ All notable changes to PipeHat. Versions follow [semantic versioning](https://se
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Transform results were silently discarded when the marshaling window was missing.**
+  Every async result in the plugin -- transform, MLLP send/replay, update check -- is
+  posted to a hidden `HWND_MESSAGE` window created once at `NPPN_READY`. If that creation
+  failed, `g_hMllpWnd` stayed null and each worker hit `if (target) ... else delete o;`,
+  throwing the outcome away. The symptom is the worst kind: the keypress does *nothing* --
+  no output, no error dialog, and a log containing `invoked` with no matching `ok` /
+  `exit N` / `timed out`. Observed live on 2026-08-07; only confirmable by enumerating the
+  running process's message-only windows.
+  - All four async sites now go through `marshalWindow()`, which retries the (idempotent)
+    creation instead of trusting a one-shot at startup.
+  - Creation failure now logs a `WND` entry with the `RegisterClass` / `CreateWindowEx`
+    error codes, so the root cause is visible next time instead of invisible.
+  - `runProvider` refuses with an explicit dialog rather than starting a transform whose
+    result has nowhere to go. The `else delete o;` silent-drop branch is gone.
+
+### Changed
+
+- **Transforming a non-HL7 tab now says so.** Previously the buffer was handed to the
+  provider regardless, so the user got the *engine's* parser error back -- a stack trace
+  about a missing `MSH`, or nothing at all -- which reads as a PipeHat defect rather than
+  "that isn't an HL7 message". `runProvider` now checks first and names the actual problem,
+  pointing at `Ctrl+Alt+Shift+E` for HL7 that detection legitimately missed (leading junk
+  lines, header-less fragments). Answering *Yes* still runs it, so no capability is lost.
+  Detection is re-run live instead of trusting the cached `view.isHL7`, which is only
+  refreshed on buffer activation and would be stale for a message pasted into an open tab.
+
+### Added
+
+- **External transform providers.** *Transform with...* (`Ctrl+Alt+Shift+X`) pipes the active
+  message to a configured command and puts the result in the other view, then runs Compare
+  Views so every changed field is boxed in both panes. *Transform Again* (`Ctrl+Alt+Shift+A`)
+  re-runs the last provider -- that is the key you hold down while learning a transformation
+  language.
+  - **PipeHat stays vendor-neutral.** It knows one contract and no vendors: `stdin` carries the
+    message in, `stdout` carries the result out, `stderr` carries diagnostics, exit `0` means
+    success. That is a UNIX filter, and it is the smallest thing that can express every engine
+    worth supporting. The engine-specific half lives in the user's own wrapper script, so
+    adding InterSystems IRIS, Mirth, Rhapsody, Cloverleaf, or Saxon never touches this repo.
+  - Providers are declared in `PipeHat.providers` in the plugin config dir, same
+    `key.attr=value` shape as `PipeHat.profile`: `<name>.command` (required), `.workdir`,
+    `.timeout` (default 15000 ms), `.desc`. A documented, fully commented-out default is
+    written on first run. Providers with no `command` are dropped rather than offered as a
+    menu entry that can only fail.
+  - The picker is a `TrackPopupMenu` at the cursor -- no new dialog template, no new resource
+    IDs. One configured provider skips the picker entirely.
+  - A non-zero exit shows `stderr` in the message box, because for someone learning a
+    transformation language the compile error *is* the output. Nothing from `stderr` reaches
+    `PipeHat.log`; it can contain message content and the log is metadata-only.
+  - **Drop-in provider packages.** Beyond the hand-edited `PipeHat.providers`, PipeHat now
+    reads `providers\*.provider` and `providers\<package>\*.provider`. Inside a `.provider`
+    file, `${DIR}` expands to that file's own folder and a relative `workdir` resolves
+    against it, so a package contains no absolute paths and no username and works wherever
+    it is unzipped. **Install is "copy a folder", uninstall is "delete it"** -- the plugin
+    experience, without PipeHat growing a DLL loader, an ABI, or a versioning burden. A
+    provider that crashes still cannot take Notepad++ with it, and providers can still be
+    written in any language.
+  - Name collisions resolve to the **first** source: `PipeHat.providers` beats a drop-in
+    that reuses a name. Silently overriding a file the user edited by hand is the wrong
+    default.
+  - **New module `TransformProvider.h`** (header-only, no NPP or Scintilla dependency), plus
+    `tests/TransformProviderTest.cpp` -- 42 standalone assertions covering config parsing,
+    the process round trip, a >256 KB payload, a missing executable, a non-zero exit, a
+    timeout, three-source discovery, `${DIR}` expansion, relative workdir resolution,
+    collision precedence, and a missing config directory.
+
+### Invariants -- do not regress
+
+- **The provider runs on a worker thread**, never the UI thread, and the result is marshaled
+  back through the existing hidden `HWND_MESSAGE` window (`WM_TRANSFORM_RESULT`). A hung
+  engine must never freeze Notepad++; `timeoutMs` terminates it.
+- **stdin write, stdout read, and stderr read each get their own thread.** Doing any two in
+  sequence on one thread deadlocks the moment the child fills a ~64 KB pipe buffer the parent
+  is not draining -- which is exactly what an engine printing a stack trace does. The process
+  wait stays on the calling thread so the timeout can actually fire. `TransformProviderTest`
+  section [4] is what proves this, and it is not decorative.
+- **Parent pipe ends are marked non-inheritable.** If the child inherits our read end, EOF
+  never arrives and the drain threads hang forever.
+
+---
+
 ## [2.1.0] -- 2026-07-16
 
 Multi-message files, and MLLP replay that frames per message.

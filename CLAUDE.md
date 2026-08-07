@@ -115,6 +115,65 @@ Three layers, each isolated:
 - **Check for Updates** (`UpdateCheck.{h,cpp}`, WinHTTP, isolated + in CMake): user-initiated GitHub
   release check on a worker thread -> `WM_UPDATE_RESULT`. Links `winhttp`, `shell32`.
 
+### External transform providers (unreleased -- the plugin's vendor-neutral escape hatch)
+
+**`TransformProvider.h`** (header-only, no NPP/Scintilla dependency) runs the active message
+through an outside transformation engine. PipeHat knows **one contract and zero vendors**:
+
+```
+stdin  <- raw message      stdout -> transformed message
+stderr -> diagnostics      exit 0 =  success
+```
+
+That is a UNIX filter. The vendor-specific half lives in the user's own wrapper script, which
+is the whole point -- **adding IRIS, Mirth, Rhapsody, Cloverleaf, or Saxon must never add a
+vendor name to this repo.** If a change would put one here, the design is wrong; extend the
+contract instead.
+
+- Providers live in `PipeHat.providers` (config dir), same `key.attr=value` shape as
+  `PipeHat.profile`: `<name>.command` (required), `.workdir`, `.timeout` (ms, default 15000),
+  `.desc`. Names may not contain a dot. `loadProviders()` seeds a commented-out documented
+  default on first run, creates `providers\`, then calls `Registry::loadFromDir`.
+  Command-less entries are dropped at parse.
+- **Drop-in packages.** `loadFromDir` reads three sources in precedence order:
+  `PipeHat.providers`, then `providers\*.provider`, then `providers\<pkg>\*.provider`. Inside
+  a `.provider`, `${DIR}` expands to that file's own folder and a relative `workdir` resolves
+  against it — that is what makes a package work wherever it is unzipped, with no username in
+  it. Install is "copy a folder", uninstall is "delete it".
+- **Name precedence: first source wins.** A name in the hand-edited `PipeHat.providers` beats
+  a drop-in that reuses it. Silently overriding a file the user edited by hand is the wrong
+  default. `m_locked` enforces this; do not "fix" it to last-wins.
+- `.provider` files are read as UTF-8 with a BOM skip. Notepad and half the editors on a
+  hospital desktop add one, and it would otherwise become part of the first provider's name.
+- `glob`/`subdirs` sort their results — `FindFirstFile` order is not guaranteed, and an
+  unstable picker menu across machines is a support call.
+- `main.cpp` glue: `cmdTransformWith` (`Ctrl+Alt+Shift+X`, `TrackPopupMenu` picker -- no `.rc`
+  template, no new resource IDs; a single provider skips the picker), `cmdTransformAgain`
+  (`Ctrl+Alt+Shift+A`, re-runs `g_lastProvider`), `runProvider` (reads the doc on the UI
+  thread, runs on a worker, posts `WM_TRANSFORM_RESULT`). **25 menu items** total; note
+  `g_funcItems[]` is sized exactly -- adding an item means bumping the array.
+- The result is written straight into the **other view's** Scintilla, then `cmdCompareViews()`
+  runs so changed fields are boxed in both panes. Writing directly avoids NPP's
+  move-to-other-view command id, which is **not** in the vendored headers. If the other view
+  is not visible, it falls back to `IDM_FILE_NEW` plus the same "move it over" guidance
+  `cmdCompareViews` already gives.
+
+**Transform-provider invariants -- do not regress:**
+
+- **Never run a provider on the UI thread.** A hung engine must not freeze Notepad++;
+  `timeoutMs` terminates it and the result comes back via the hidden window.
+- **stdin write, stdout read, and stderr read each need their own thread.** Any two in sequence
+  on one thread deadlocks as soon as the child fills a ~64 KB pipe buffer the parent is not
+  draining -- which is what an engine printing a stack trace does. The process wait stays on the
+  calling thread so the timeout can fire; a reader blocked on a child that never closes stdout
+  would otherwise wait forever.
+- **Mark parent pipe ends `HANDLE_FLAG_INHERIT = 0`.** A child holding a copy of our read end
+  means EOF never arrives and the drain threads hang.
+- **`stderr` must not reach `PipeHat.log`.** It can contain message content; the log is
+  PHI-aware metadata only. It goes to the message box and nowhere else.
+- **Run `tests/TransformProviderTest.cpp` after touching the runner** (build line in the file
+  header). Section [4]'s >256 KB payload is the deadlock guard -- do not shrink it.
+
 **MLLP invariants -- do not regress:** networking is OFF by default; binds are loopback-only
 unless the user opts in *and* provides an address (`MllpConfig::effectiveBindAddr` fails safe);
 a cleartext-PHI confirmation gates first use each session; the listener is stopped and the

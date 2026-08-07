@@ -28,6 +28,7 @@
 #include "MllpProtocol.h"
 #include "MllpTransport.h"
 #include "UpdateCheck.h"
+#include "TransformProvider.h"
 #include <thread>
 
 // Scintilla indicator slots for squiggles (0-7 are reserved for lexers).
@@ -41,6 +42,7 @@
 #define WM_MLLP_RECEIVED   (WM_APP + 1)  // lParam = new std::string* (inbound bytes)
 #define WM_MLLP_ACK_RESULT (WM_APP + 2)  // lParam = new mllpnet::SendResult*
 #define WM_UPDATE_RESULT   (WM_APP + 3)  // lParam = new updatecheck::Result*
+#define WM_TRANSFORM_RESULT (WM_APP + 4) // lParam = new TransformOutcome*
 #define WM_PIPEHAT_RESTYLE (WM_APP + 4)  // deferred re-style after buffer activation settles
 #define WM_MLLP_REPLAY_DONE (WM_APP + 5) // lParam = new ReplaySummary*
 
@@ -69,6 +71,9 @@ static std::wstring g_activeProfile;   // active conformance profile name ("" = 
 static MllpConfig        g_mllp;
 static mllpnet::Listener g_listener;
 static HWND              g_hMllpWnd = nullptr;      // hidden UI-thread marshaling window
+// Defined next to createMllpWindow(); declared here because the async commands
+// above it must never read g_hMllpWnd directly. See the comment at the definition.
+static HWND              marshalWindow();
 static bool              g_mllpCleartextAcked = false; // PHI cleartext warning shown this session
 static int               g_mllpListenerItemIdx = -1;   // g_funcItems index of the listener toggle
 
@@ -113,7 +118,7 @@ static void cmdOpenEventLog() {
 // User-initiated GitHub release check (never automatic). Runs on a worker
 // thread; the result is marshaled to the hidden window for the dialog.
 static void cmdCheckUpdates() {
-    HWND target = g_hMllpWnd;
+    HWND target = marshalWindow();
     logEvent(L"UPDATE", L"Update check requested");
     std::thread([target]() {
         updatecheck::Result r = updatecheck::fetchLatestTag("iacsha", "PipeHat-npp");
@@ -133,7 +138,7 @@ static int g_healCount = 0;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[23];
+static FuncItem g_funcItems[25];
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -153,6 +158,8 @@ static ShortcutKey g_skCopyPath;
 static ShortcutKey g_skCopyRtf;
 static ShortcutKey g_skNextMsg;
 static ShortcutKey g_skPrevMsg;
+static ShortcutKey g_skXform;
+static ShortcutKey g_skXformAgain;
 
 // ── Helpers ──
 static HWND getCurrentScintilla() {
@@ -694,6 +701,183 @@ static void loadProfile() {
     g_profile.parse(utf8ToW(bytes));
 }
 
+// ── External transform providers ──────────────────────────────────────────
+//
+// PipeHat pipes the active message to a command and shows what comes back. It
+// knows one contract -- stdin in, stdout out, exit code -- and nothing about any
+// vendor. The engine-specific half lives in the user's own provider script, so
+// adding IRIS, Mirth, Rhapsody, or an XSLT processor never touches this repo.
+// See TransformProvider.h.
+
+static xform::Registry g_providers;
+static std::wstring    g_lastProvider;   // remembered so Transform Again is one key
+
+// Marshaled from the worker thread to the hidden window.
+struct TransformOutcome {
+    std::wstring     provider;
+    xform::RunResult result;
+};
+
+static void cmdCompareViews();           // defined below; auto-run after a transform
+
+static std::wstring providersPath() {
+    std::wstring dir = configDirW();
+    return dir.empty() ? std::wstring() : dir + L"\\PipeHat.providers";
+}
+
+static void loadProviders() {
+    std::wstring dir = configDirW();
+    if (dir.empty()) return;
+
+    std::wstring path = providersPath();
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        std::string bytes = wToUtf8(xform::Registry::defaultFileText());
+        std::ofstream out(path.c_str(), std::ios::binary);
+        if (out) out.write(bytes.data(), (std::streamsize)bytes.size());
+    }
+    // The folder exists so a user can drop a package into it without first
+    // guessing the name.
+    CreateDirectoryW((dir + L"\\providers").c_str(), nullptr);
+
+    // Reads PipeHat.providers plus every providers\*.provider and
+    // providers\<pkg>\*.provider, in that precedence order.
+    g_providers.loadFromDir(dir);
+}
+
+// Whole active document as UTF-8. UI thread only.
+static std::string activeDocUtf8() {
+    ScintillaView& view = getCurrentView();
+    if (!view.fnDirect) return std::string();
+    int len = (int)view.fnDirect(view.ptrDirect, SCI_GETLENGTH, 0, 0);
+    if (len <= 0) return std::string();
+    std::string u8(static_cast<size_t>(len) + 1, '\0');
+    view.fnDirect(view.ptrDirect, SCI_GETTEXT, len + 1, (sptr_t)&u8[0]);
+    u8.resize(len);
+    return u8;
+}
+
+// Read the message on the UI thread, run the provider on a worker, marshal the
+// result back through the hidden window. Same shape as MLLP send and the update
+// check: a provider that hangs must never freeze Notepad++.
+static void runProvider(const xform::Provider& p) {
+    std::string input = activeDocUtf8();
+    if (input.empty()) {
+        MessageBoxW(g_nppData._nppHandle,
+            L"There is no message in the active view to transform.",
+            L"PipeHat \x2014 Transform", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    // Catch "wrong tab" before the provider does. Handing arbitrary text to a
+    // transform engine gets you the engine's parser error -- a stack trace about
+    // a missing MSH, or worse, silence -- which reads as a PipeHat bug rather
+    // than "that isn't an HL7 message". Check here, where we can say so plainly.
+    //
+    // Detection is re-run live rather than trusting view.isHL7: that flag is set
+    // on buffer activation, so a message pasted into an already-open tab would
+    // still be flagged false. view.isHL7 is still honoured because it also covers
+    // the .hl7 extension, MLLP-received buffers, and Ctrl+Alt+Shift+E.
+    {
+        ScintillaView& view = getCurrentView();
+        bool looksHL7 = view.isHL7 ||
+                        (view.hWnd && view.fnDirect &&
+                         ScintillaStyler::detectHL7(view.hWnd, view.fnDirect, view.ptrDirect));
+        if (!looksHL7) {
+            int r = MessageBoxW(g_nppData._nppHandle,
+                L"HL7 message not detected in the active view.\r\n\r\n"
+                L"PipeHat looks for an MSH, FHS, or BHS segment in the first few "
+                L"lines. Open an HL7 message and try again.\r\n\r\n"
+                L"If this really is HL7 that detection missed \x2014 leading junk "
+                L"lines, or a fragment with no header \x2014 press "
+                L"Ctrl+Alt+Shift+E to force HL7 mode on this document.\r\n\r\n"
+                L"Run the transform on it anyway?",
+                L"PipeHat \x2014 Transform", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+            if (r != IDYES) {
+                logEvent(L"XFORM", L"Provider '" + p.name + L"' cancelled \x2014 no HL7 detected");
+                return;
+            }
+            logEvent(L"XFORM", L"Provider '" + p.name + L"' forced on non-HL7 buffer");
+        }
+    }
+
+    g_lastProvider = p.name;
+    logEvent(L"XFORM", L"Provider '" + p.name + L"' invoked on " +
+             std::to_wstring((int)input.size()) + L" bytes");
+
+    // Refuse loudly rather than running a transform whose result has nowhere to
+    // go. The old code started the worker anyway and dropped the outcome, which
+    // presented as the keypress doing absolutely nothing -- no output, no error,
+    // and only an "invoked" line in the log with no matching outcome.
+    HWND target = marshalWindow();
+    if (!target) {
+        MessageBoxW(g_nppData._nppHandle,
+            L"PipeHat could not create the window it uses to receive the "
+            L"transform result, so the transform was not run.\r\n\r\n"
+            L"Restarting Notepad++ normally clears this. If it persists, see "
+            L"the WND entry in the event log (Plugins > PipeHat > Open Event Log) "
+            L"for the Windows error code.",
+            L"PipeHat \x2014 Transform", MB_OK | MB_ICONERROR);
+        logEvent(L"XFORM", L"Provider '" + p.name + L"' NOT run \x2014 no marshaling window");
+        return;
+    }
+
+    xform::Provider copy = p;   // the worker must not reference g_providers
+    std::thread([target, copy, input]() {
+        TransformOutcome* o = new TransformOutcome();
+        o->provider = copy.name;
+        o->result   = xform::run(copy, input);
+        PostMessageW(target, WM_TRANSFORM_RESULT, 0, (LPARAM)o);
+    }).detach();
+}
+
+// Provider picker. A popup menu rather than a dialog: no .rc template, no new
+// resource IDs, and it appears where the mouse already is.
+static void cmdTransformWith() {
+    if (g_providers.count() == 0) {
+        int r = MessageBoxW(g_nppData._nppHandle,
+            L"No transform providers are configured.\r\n\r\n"
+            L"PipeHat can run the active message through any command that reads the "
+            L"message on stdin and writes the result to stdout \x2014 an IRIS wrapper, "
+            L"a Mirth script, an XSLT processor, anything you can put behind a "
+            L"command line.\r\n\r\n"
+            L"Install one by unzipping it into the 'providers' folder next to this "
+            L"file, or declare it yourself in PipeHat.providers.\r\n\r\n"
+            L"Open PipeHat.providers now?",
+            L"PipeHat \x2014 Transform", MB_YESNO | MB_ICONINFORMATION);
+        if (r == IDYES) {
+            loadProviders();            // seeds the documented default if absent
+            std::wstring path = providersPath();
+            if (!path.empty())
+                SendMessage(g_nppData._nppHandle, NPPM_DOOPEN, 0, (LPARAM)path.c_str());
+        }
+        return;
+    }
+
+    const std::vector<xform::Provider>& list = g_providers.providers();
+    if (list.size() == 1) { runProvider(list[0]); return; }
+
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    for (size_t i = 0; i < list.size(); i++) {
+        std::wstring label = list[i].name;
+        if (!list[i].desc.empty()) label += L"\t" + list[i].desc;
+        AppendMenuW(menu, MF_STRING, (UINT_PTR)(i + 1), label.c_str());
+    }
+    POINT pt; GetCursorPos(&pt);
+    int pick = (int)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN,
+                                   pt.x, pt.y, 0, g_nppData._nppHandle, nullptr);
+    DestroyMenu(menu);
+    if (pick > 0 && pick <= (int)list.size()) runProvider(list[pick - 1]);
+}
+
+// The key you actually hold down while learning a transformation language.
+static void cmdTransformAgain() {
+    if (g_lastProvider.empty()) { cmdTransformWith(); return; }
+    const xform::Provider* p = g_providers.find(g_lastProvider);
+    if (!p) { cmdTransformWith(); return; }   // renamed or removed since last run
+    runProvider(*p);
+}
+
 // Open the settings GUI (conformance-rule editor + MLLP + profiles). On save we
 // reload the active profile so Check Conformance reflects edits without a restart.
 static void cmdSettings() {
@@ -917,6 +1101,97 @@ static LRESULT CALLBACK mllpWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
             return 0;
         }
+        case WM_TRANSFORM_RESULT: {
+            TransformOutcome* o = (TransformOutcome*)l;
+            if (!o) return 0;
+
+            if (!o->result.launched) {
+                MessageBoxW(g_nppData._nppHandle, o->result.failure.c_str(),
+                            L"PipeHat \x2014 Transform", MB_OK | MB_ICONERROR);
+                logEvent(L"XFORM", L"Provider '" + o->provider + L"' failed to start");
+                delete o; return 0;
+            }
+            if (o->result.timedOut) {
+                MessageBoxW(g_nppData._nppHandle,
+                    (L"Provider '" + o->provider + L"' did not finish in time and was stopped.\r\n\r\n"
+                     L"Raise its timeout in PipeHat.providers if the engine is genuinely that slow.").c_str(),
+                    L"PipeHat \x2014 Transform", MB_OK | MB_ICONWARNING);
+                logEvent(L"XFORM", L"Provider '" + o->provider + L"' timed out");
+                delete o; return 0;
+            }
+            if (o->result.exitCode != 0) {
+                // The failure a learner hits constantly: a compile error in the
+                // transform itself. stderr is where every engine puts it, so show
+                // it rather than a generic "transform failed".
+                std::wstring detail = utf8ToW(o->result.err);
+                if (detail.size() > 2000) detail = detail.substr(0, 2000) + L"\r\n...";
+                if (detail.empty()) detail = L"(the provider wrote nothing to stderr)";
+                MessageBoxW(g_nppData._nppHandle,
+                    (L"Provider '" + o->provider + L"' exited with code " +
+                     std::to_wstring((int)o->result.exitCode) + L".\r\n\r\n" + detail).c_str(),
+                    L"PipeHat \x2014 Transform failed", MB_OK | MB_ICONERROR);
+                logEvent(L"XFORM", L"Provider '" + o->provider + L"' exit " +
+                         std::to_wstring((int)o->result.exitCode));
+                delete o; return 0;
+            }
+
+            // Normalize lone-CR segment terminators exactly as inbound MLLP does,
+            // so the result displays as real lines instead of one long one.
+            const std::string& raw = o->result.out;
+            std::string disp; disp.reserve(raw.size());
+            for (size_t i = 0; i < raw.size(); ++i) {
+                char c = raw[i];
+                if (c == '\r') { disp += "\r\n"; if (i + 1 < raw.size() && raw[i + 1] == '\n') ++i; }
+                else if (c == '\n') { disp += "\r\n"; }
+                else disp.push_back(c);
+            }
+
+            // Result goes into the OTHER view so Compare Views can box every
+            // changed field in both panes. Writing straight into that view's
+            // Scintilla keeps us off NPP's move-to-other-view command id, which
+            // is not in the vendored headers.
+            HWND hMain  = g_nppData._scintillaMainHandle;
+            HWND hCur   = getCurrentScintilla();
+            HWND hOther = (hCur == hMain) ? g_nppData._scintillaSecondHandle : hMain;
+            bool placed = false;
+
+            if (hOther && IsWindowVisible(hOther)) {
+                SciFnDirect ofn = (SciFnDirect)SendMessage(hOther, SCI_GETDIRECTFUNCTION, 0, 0);
+                sptr_t optr = (sptr_t)SendMessage(hOther, SCI_GETDIRECTPOINTER, 0, 0);
+                if (ofn) { ofn(optr, SCI_SETTEXT, 0, (sptr_t)disp.c_str()); placed = true; }
+            }
+            if (!placed) {
+                SendMessage(g_nppData._nppHandle, NPPM_MENUCOMMAND, 0, IDM_FILE_NEW);
+                HWND hNew = getCurrentScintilla();
+                if (hNew) {
+                    SciFnDirect nfn = (SciFnDirect)SendMessage(hNew, SCI_GETDIRECTFUNCTION, 0, 0);
+                    sptr_t nptr = (sptr_t)SendMessage(hNew, SCI_GETDIRECTPOINTER, 0, 0);
+                    if (nfn) nfn(nptr, SCI_SETTEXT, 0, (sptr_t)disp.c_str());
+                }
+            }
+
+            {
+                ScintillaView& view = getCurrentView();
+                applyHL7Styling(view);
+                updateTreeVisibility(view);
+            }
+
+            if (placed) {
+                cmdCompareViews();
+            } else {
+                MessageBoxW(g_nppData._nppHandle,
+                    L"The transformed message opened in a new tab.\r\n\r\n"
+                    L"Move it to the other view (View > Move/Clone Current Document > "
+                    L"Move to Other View, or drag its tab to the side). After that every "
+                    L"run lands there and PipeHat diffs it against the source for you.",
+                    L"PipeHat \x2014 Transform", MB_OK | MB_ICONINFORMATION);
+            }
+
+            logEvent(L"XFORM", L"Provider '" + o->provider + L"' ok, " +
+                     std::to_wstring((int)raw.size()) + L" bytes returned");
+            delete o;
+            return 0;
+        }
         case WM_MLLP_ACK_RESULT: {
             mllpnet::SendResult* r = (mllpnet::SendResult*)l;
             if (r) {
@@ -1013,9 +1288,36 @@ static void createMllpWindow() {
     wc.lpfnWndProc = mllpWndProc;
     wc.hInstance = (HINSTANCE)g_hModule;
     wc.lpszClassName = L"PipeHatMllpMsgWnd";
+    SetLastError(0);
     RegisterClassW(&wc); // harmless if already registered
+    DWORD regErr = GetLastError();
+    SetLastError(0);
     g_hMllpWnd = CreateWindowExW(0, L"PipeHatMllpMsgWnd", L"", 0,
         0, 0, 0, 0, HWND_MESSAGE, nullptr, (HINSTANCE)g_hModule, nullptr);
+    if (!g_hMllpWnd) {
+        // Worth a log line rather than a silent null: every async result in this
+        // plugin -- transform, MLLP send/replay, update check -- is marshaled
+        // through this window, and without it they are all dropped on the floor.
+        logEvent(L"WND", L"marshaling window creation FAILED, RegisterClass err=" +
+                 std::to_wstring((unsigned)regErr) +
+                 L" CreateWindowEx err=" + std::to_wstring((unsigned)GetLastError()));
+    }
+}
+
+// Every async path must go through this, never through a bare `g_hMllpWnd` read.
+//
+// This exists because of a real, and genuinely nasty, failure observed 2026-08-07:
+// the window was null in a running session, so `if (target) ... else delete o;`
+// threw away every transform result. No dialog, no log line, no output -- the
+// keypress simply did nothing, six times in a row, and the log recorded only
+// "invoked" with no outcome. A user cannot debug that, and neither could I
+// without dumping the window list of the live process.
+//
+// Creation is idempotent, so retrying here is free and recovers a session where
+// NPPN_READY's attempt failed for whatever reason.
+static HWND marshalWindow() {
+    createMllpWindow();
+    return g_hMllpWnd;
 }
 
 // Send the active message to the configured host:port over MLLP, on a worker
@@ -1108,7 +1410,7 @@ static void cmdMllpReplay() {
                       L" message(s) to " + g_mllp.host + L":" + std::to_wstring(g_mllp.sendPort) +
                       L", refresh=" + (refresh ? L"yes" : L"no"));
 
-    HWND target = g_hMllpWnd;
+    HWND target = marshalWindow();
     std::thread([host, port, messages, refresh, target]() {
         ReplaySummary s;
         s.total = (int)messages.size();
@@ -1168,7 +1470,7 @@ static void cmdMllpSend() {
     std::string host = wToUtf8(g_mllp.host);
     unsigned short port = (unsigned short)g_mllp.sendPort;
     logEvent(L"MLLP", L"Send initiated to " + g_mllp.host + L":" + std::to_wstring(g_mllp.sendPort));
-    HWND target = g_hMllpWnd;
+    HWND target = marshalWindow();
     std::thread([host, port, norm, target]() {
         mllpnet::SendResult r = mllpnet::sendSync(host, port, norm, 10000);
         if (target) PostMessageW(target, WM_MLLP_ACK_RESULT, 0, (LPARAM)new mllpnet::SendResult(r));
@@ -2117,6 +2419,8 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skCopyRtf    = { true, true, true, 'W' };             // Ctrl+Alt+Shift+W  -- copy as rich text
     g_skNextMsg    = { true, true, true, VK_NEXT };         // Ctrl+Alt+Shift+PgDn -- next message
     g_skPrevMsg    = { true, true, true, VK_PRIOR };        // Ctrl+Alt+Shift+PgUp -- previous message
+    g_skXform      = { true, true, true, 'X' };             // Ctrl+Alt+Shift+X  -- transform with... (picker)
+    g_skXformAgain = { true, true, true, 'A' };             // Ctrl+Alt+Shift+A  -- transform again (last provider)
 
     g_nbFuncItems = 0;
 
@@ -2253,6 +2557,20 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._pShKey = &g_skCopyRtf;
     g_nbFuncItems++;
 
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Transform with...");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdTransformWith;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skXform;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Transform Again");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdTransformAgain;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skXformAgain;
+    g_nbFuncItems++;
+
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Open Event Log");
     g_funcItems[g_nbFuncItems]._pFunc = cmdOpenEventLog;
     g_funcItems[g_nbFuncItems]._cmdID = 0;
@@ -2322,6 +2640,7 @@ extern "C" __declspec(dllexport) void beNotified(SCNotification* notifyCode) {
             ScintillaView& view = getCurrentView();
             checkAndEnableHL7(view);
             loadProfile();
+            loadProviders();
             loadMllpConfig();
             createMllpWindow();
             g_treeView.create((HINSTANCE)g_hModule, g_nppData._nppHandle, &g_nppData);
