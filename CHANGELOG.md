@@ -6,6 +6,12 @@ All notable changes to PipeHat. Versions follow [semantic versioning](https://se
 
 ## [Unreleased]
 
+## [2.2.0] -- 2026-08-07
+
+Everything below was found or hardened by running the plugin against real
+Notepad++ installs on two machines, one of them a locked-down work PC. Three of
+the four defects fixed here were invisible from the development box.
+
 ### Fixed
 
 - **Transform results were silently discarded when the marshaling window was missing.**
