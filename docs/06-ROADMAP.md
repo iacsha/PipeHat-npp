@@ -253,6 +253,90 @@ seam in mind even though search itself is not on this pass.
 
 ---
 
+## Proposed features (2026-08-07 planning pass -- the provider axis)
+
+v2.2.0 shipped external transform providers, which opened a surface this document
+barely mentions. The contract is deliberately tiny -- **stdin in, stdout out, exit code
+decides** -- and everything below is a consequence of that, not new plumbing.
+
+The framing that matters: PipeHat does not implement transformation languages. It
+*runs other people's engines* behind a contract it already ships. That is what keeps
+this list from re-opening anything in "considered and declined" below -- FHIR, X12 and
+CDA all stay declined on their original merits. Running a FHIR mapping engine as a
+provider is not the same as building a resource model.
+
+### Two-provider diff -- migration validator -- P1
+
+**The strongest item on this page, and one of the smallest.**
+
+Run one message through two providers and diff the results. "Does my new IRIS DTL do
+the same thing as the Mirth transformer it replaces?" is the central question of every
+engine migration, it gets asked hundreds of times per engagement, and today the answer
+is a person eyeballing two messages side by side.
+
+Every piece already exists: the picker, the worker thread, the marshaling window, and
+Compare Views. What is missing is a menu entry that runs two providers instead of one
+and puts each result in a view.
+
+Sharpest when the two engines are *different vendors* -- that is exactly the case
+where nobody trusts a visual check.
+
+### Mirth / BridgeLink JavaScript provider -- P1
+
+The biggest install base in US healthcare, and the one that makes a local bench most
+valuable: today, testing a transformer step means deploying a channel.
+
+**Known cost up front:** Mirth's `msg['PID']['PID.5']['PID.5.1']` is E4X over Rhino,
+not standard JavaScript. A provider needs a shim emulating that accessor over a real
+parser. That shim *is* the project -- the rest is the existing bench harness. Estimate
+days, not weeks, but do not estimate hours.
+
+Ships as a drop-in package like `hl7-bench`, not as plugin code.
+
+### Golden-file transform regression tests -- P1
+
+A folder of input/expected pairs; run them all through a provider and report which
+changed. Interface engineers have essentially no regression testing for transforms,
+which is a large part of why go-lives are frightening.
+
+This is what turns a bench from a scratchpad into a tool, and it composes with the
+migration validator: the expected file can be produced by the *old* engine.
+
+### Cloverleaf Tcl provider -- P2
+
+Second-largest install base; TPS scripts are plain Tcl and `tclsh` is trivially
+scriptable. No decent local bench exists for Cloverleaf anywhere.
+
+### PHI-safe reproduction packaging -- P2
+
+Scrub a message, bundle it with the transform that failed and the error text, produce
+one file to attach to a vendor ticket. The scrubber already exists; this is assembly.
+Small feature, disproportionate payoff, and it only occurs to someone who has filed
+those tickets by hand.
+
+### Provider chaining -- P2
+
+Pipe through two providers in sequence: normalise with one, map with another. Cheap
+once the picker supports multi-select.
+
+### Lower-effort provider packages -- P2
+
+- **XSLT via Saxon** -- nearly free; the command line is already an example in the
+  generated `PipeHat.providers`.
+- **Python + `hl7apy`** -- not an engine, but it is what everyone reaches for on a
+  one-off.
+- **FHIR Mapping Language / Google Whistle** -- both are v2-to-FHIR mapping languages.
+  Parking them here is how the FHIR question gets approached *without* reopening it:
+  running someone else's mapping engine sidesteps the resource-model-and-serializer
+  argument that got FHIR deferred in the first place.
+
+### Declined on this axis
+
+- **Rhapsody** -- no clean scriptable CLI.
+- **Corepoint** -- proprietary GUI; no scriptable engine exposed at all.
+
+---
+
 ## Scope boundaries -- considered and declined
 
 Recorded so they are not re-litigated. Revisit only with a specific reason.
