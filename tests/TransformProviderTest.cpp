@@ -239,6 +239,83 @@ int main() {
         RemoveDirectoryW(root.c_str());
     }
 
+    // ── [7] update-reporting attributes ───────────────────────────────────
+    //
+    // Check-only metadata. `checkable()` gates the network call, so the cases
+    // that matter are the half-configured ones: a version with nowhere to look,
+    // or a repo with nothing to compare against. Both must stay silent rather
+    // than produce a lookup that can only mislead.
+    std::printf("\n[7] update reporting\n");
+    {
+        xform::Registry reg;
+        reg.parse(
+            L"full.command = cmd.exe /c echo hi\r\n"
+            L"full.version = 1.2.0\r\n"
+            L"full.updatecheck = iacsha/hl7-bench\r\n"
+            L"full.updateurl = https://example.invalid/dl\r\n"
+            L"\r\n"
+            L"nourl.command = cmd.exe /c echo hi\r\n"
+            L"nourl.version = 0.9.0\r\n"
+            L"nourl.updatecheck = iacsha/hl7-bench\r\n"
+            L"\r\n"
+            L"veronly.command = cmd.exe /c echo hi\r\n"
+            L"veronly.version = 3.0.0\r\n"
+            L"\r\n"
+            L"repoonly.command = cmd.exe /c echo hi\r\n"
+            L"repoonly.updatecheck = iacsha/hl7-bench\r\n"
+            L"\r\n"
+            L"bare.command = cmd.exe /c echo hi\r\n"
+            L"\r\n"
+            L"badrepo.command = cmd.exe /c echo hi\r\n"
+            L"badrepo.version = 1.0.0\r\n"
+            L"badrepo.updatecheck = not-a-repo\r\n"
+            L"\r\n"
+            L"spacey.command = cmd.exe /c echo hi\r\n"
+            L"spacey.version = 1.0.0\r\n"
+            L"spacey.updatecheck = owner / repo\r\n");
+
+        const xform::Provider* full = reg.find(L"full");
+        check(full != nullptr, "provider with update info parsed");
+        if (full) {
+            check(full->version == L"1.2.0", "version parsed");
+            check(full->updateRepo == L"iacsha/hl7-bench", "updatecheck parsed");
+            check(full->updateUrl == L"https://example.invalid/dl", "updateurl parsed");
+            check(full->checkable(), "version + repo is checkable");
+        }
+
+        const xform::Provider* nourl = reg.find(L"nourl");
+        if (nourl) {
+            check(nourl->updateUrl.empty(), "updateurl stays empty when unset");
+            check(nourl->checkable(), "checkable without an explicit url");
+        }
+
+        // Half-configured: nothing to compare, or nowhere to look.
+        const xform::Provider* v = reg.find(L"veronly");
+        if (v) check(!v->checkable(), "version without a repo is not checkable");
+        const xform::Provider* r = reg.find(L"repoonly");
+        if (r) check(!r->checkable(), "repo without a version is not checkable");
+        const xform::Provider* bare = reg.find(L"bare");
+        if (bare) check(!bare->checkable(), "a plain provider is not checkable");
+
+        // A malformed repo must be dropped at parse, not carried into a lookup
+        // and certainly not handed to ShellExecute as if it were a link.
+        const xform::Provider* bad = reg.find(L"badrepo");
+        if (bad) {
+            check(bad->updateRepo.empty(), "updatecheck without a slash is rejected");
+            check(!bad->checkable(), "malformed repo is not checkable");
+        }
+        const xform::Provider* sp = reg.find(L"spacey");
+        if (sp) {
+            check(sp->updateRepo.empty(), "updatecheck containing spaces is rejected");
+            check(!sp->checkable(), "spaced repo is not checkable");
+        }
+
+        // The new attributes must not have disturbed the existing contract.
+        if (full) check(full->command == L"cmd.exe /c echo hi",
+                        "command still parses alongside update attributes");
+        checkInt((int)reg.count(), 7, "no provider dropped by the new attributes");
+    }
+
     std::printf("\n%s (%d failure%s)\n",
                 g_failures == 0 ? "ALL PASS" : "FAILURES",
                 g_failures, g_failures == 1 ? "" : "s");

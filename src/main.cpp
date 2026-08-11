@@ -41,7 +41,7 @@
 // UI-thread window (buffer creation and dialogs must run on the UI thread).
 #define WM_MLLP_RECEIVED   (WM_APP + 1)  // lParam = new std::string* (inbound bytes)
 #define WM_MLLP_ACK_RESULT (WM_APP + 2)  // lParam = new mllpnet::SendResult*
-#define WM_UPDATE_RESULT   (WM_APP + 3)  // lParam = new updatecheck::Result*
+#define WM_UPDATE_RESULT   (WM_APP + 3)  // lParam = new UpdateReport*
 #define WM_TRANSFORM_RESULT (WM_APP + 4) // lParam = new TransformOutcome*
 #define WM_PIPEHAT_RESTYLE (WM_APP + 4)  // deferred re-style after buffer activation settles
 #define WM_MLLP_REPLAY_DONE (WM_APP + 5) // lParam = new ReplaySummary*
@@ -115,16 +115,9 @@ static void cmdOpenEventLog() {
     SendMessage(g_nppData._nppHandle, NPPM_DOOPEN, 0, (LPARAM)path.c_str());
 }
 
-// User-initiated GitHub release check (never automatic). Runs on a worker
-// thread; the result is marshaled to the hidden window for the dialog.
-static void cmdCheckUpdates() {
-    HWND target = marshalWindow();
-    logEvent(L"UPDATE", L"Update check requested");
-    std::thread([target]() {
-        updatecheck::Result r = updatecheck::fetchLatestTag("iacsha", "PipeHat-npp");
-        if (target) PostMessageW(target, WM_UPDATE_RESULT, 0, (LPARAM)new updatecheck::Result(r));
-    }).detach();
-}
+// User-initiated release check (never automatic). Defined further down, after
+// g_providers and isNewerVersion, because it now reports provider packages too.
+static void cmdCheckUpdates();
 
 // Tracks whether the user wants the tree panel shown. The panel only actually
 // appears when this is true AND the active buffer is HL7 -- so it never auto-loads
@@ -991,6 +984,77 @@ static bool isNewerVersion(const std::wstring& latest, const std::wstring& cur) 
     return c1 > c2;
 }
 
+// ── Check for Updates ─────────────────────────────────────────────────────
+//
+// One pass covers the plugin and every provider package that declared both a
+// version and a repo. Marshaled back as a whole so the user gets one dialog
+// rather than one per package.
+//
+// REPORTING ONLY -- do not grow a downloader here. A `.provider` names a
+// command this plugin executes, so an updater that fetched and activated a
+// provider would let a remote artifact decide what runs on a workstation with
+// PHI access. Reading a version string cannot execute anything. If downloading
+// is ever wanted it needs pinned hashes, a staging folder that is never the
+// live one, and an install step the user performs -- a different feature.
+struct UpdateReport {
+    updatecheck::Result plugin;
+    struct Item {
+        std::wstring name;
+        std::wstring installed;
+        std::wstring latest;
+        std::wstring url;
+        std::wstring error;
+        bool behind = false;
+    };
+    std::vector<Item> providers;
+};
+
+// More than this many browser tabs at once is a prank, not a convenience.
+static const size_t kMaxUpdatePagesToOpen = 5;
+
+static void cmdCheckUpdates() {
+    HWND target = marshalWindow();
+    logEvent(L"UPDATE", L"Update check requested");
+
+    // Snapshot on the UI thread. The worker must not reach into g_providers --
+    // loadProviders() can run while a check is in flight, and the same rule
+    // already governs runProvider().
+    struct Query { std::wstring name, installed, repo, url; };
+    std::vector<Query> queries;
+    for (const auto& p : g_providers.providers()) {
+        if (!p.checkable()) continue;
+        queries.push_back({ p.name, p.version, p.updateRepo, p.updateUrl });
+    }
+
+    std::thread([target, queries]() {
+        UpdateReport* rep = new UpdateReport();
+        rep->plugin = updatecheck::fetchLatestTag("iacsha", "PipeHat-npp");
+
+        for (const auto& q : queries) {
+            UpdateReport::Item it;
+            it.name      = q.name;
+            it.installed = q.installed;
+            it.url       = q.url.empty() ? (L"https://github.com/" + q.repo + L"/releases")
+                                         : q.url;
+
+            const size_t slash = q.repo.find(L'/');
+            updatecheck::Result r =
+                updatecheck::fetchLatestTag(wToUtf8(q.repo.substr(0, slash)),
+                                            wToUtf8(q.repo.substr(slash + 1)));
+            if (!r.ok) {
+                it.error = utf8ToW(r.error);
+            } else {
+                it.latest = utf8ToW(r.tag);
+                it.behind = isNewerVersion(it.latest, it.installed);
+            }
+            rep->providers.push_back(it);
+        }
+
+        if (target) PostMessageW(target, WM_UPDATE_RESULT, 0, (LPARAM)rep);
+        else        delete rep;   // no window means nobody will ever free it
+    }).detach();
+}
+
 // Outcome of a replay run, marshaled from the worker thread back to the UI thread.
 struct ReplaySummary {
     int total = 0;          // messages the buffer contained
@@ -1252,29 +1316,70 @@ static LRESULT CALLBACK mllpWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         }
         case WM_UPDATE_RESULT: {
-            updatecheck::Result* ur = (updatecheck::Result*)l;
-            if (ur) {
-                const wchar_t* url = L"https://github.com/iacsha/PipeHat-npp/releases";
-                std::wstring cur = HL7_PLUGIN_VERSION;
-                if (!ur->ok) {
-                    MessageBoxW(g_nppData._nppHandle,
-                        (L"Could not check for updates:\r\n" + utf8ToW(ur->error)).c_str(),
-                        L"PipeHat \x2014 Check for Updates", MB_OK | MB_ICONWARNING);
+            UpdateReport* rep = (UpdateReport*)l;
+            if (rep) {
+                const std::wstring pluginUrl = L"https://github.com/iacsha/PipeHat-npp/releases";
+                const std::wstring cur = HL7_PLUGIN_VERSION;
+
+                std::wstring body;
+                std::vector<std::wstring> toOpen;
+
+                if (!rep->plugin.ok) {
+                    body += L"PipeHat: could not check (" + utf8ToW(rep->plugin.error) + L")\r\n";
                 } else {
-                    std::wstring latest = utf8ToW(ur->tag);
+                    std::wstring latest = utf8ToW(rep->plugin.tag);
                     if (isNewerVersion(latest, cur)) {
-                        int yn = MessageBoxW(g_nppData._nppHandle,
-                            (L"PipeHat " + latest + L" is available (you have v" + cur +
-                             L").\r\n\r\nOpen the releases page?").c_str(),
-                            L"PipeHat \x2014 Update Available", MB_YESNO | MB_ICONINFORMATION);
-                        if (yn == IDYES) ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
+                        body += L"PipeHat " + latest + L" is available (you have v" + cur + L")\r\n";
+                        toOpen.push_back(pluginUrl);
                     } else {
-                        MessageBoxW(g_nppData._nppHandle,
-                            (L"You're up to date (v" + cur + L").").c_str(),
-                            L"PipeHat \x2014 Check for Updates", MB_OK | MB_ICONINFORMATION);
+                        body += L"PipeHat v" + cur + L" is up to date\r\n";
                     }
                 }
-                delete ur;
+
+                // Silence here means nothing declared a version and a repo, which
+                // is the default. Say so rather than leaving a blank space that
+                // reads like a failed check.
+                body += L"\r\nProvider packages: ";
+                if (rep->providers.empty()) {
+                    body += L"none declare update info\r\n";
+                } else {
+                    body += L"\r\n";
+                    for (const auto& it : rep->providers) {
+                        body += L"  " + it.name + L": ";
+                        if (!it.error.empty()) {
+                            body += L"could not check (" + it.error + L")";
+                        } else if (it.behind) {
+                            body += it.latest + L" available (you have " + it.installed + L")";
+                            if (toOpen.size() < kMaxUpdatePagesToOpen) toOpen.push_back(it.url);
+                        } else {
+                            body += L"up to date (" + it.installed + L")";
+                        }
+                        body += L"\r\n";
+                    }
+                }
+
+                if (toOpen.empty()) {
+                    MessageBoxW(g_nppData._nppHandle, body.c_str(),
+                        L"PipeHat \x2014 Check for Updates", MB_OK | MB_ICONINFORMATION);
+                } else {
+                    body += (toOpen.size() > 1 ? L"\r\nOpen the download pages?"
+                                               : L"\r\nOpen the download page?");
+                    body += L"\r\n\r\nPipeHat only reports. It does not download or "
+                            L"install anything: a provider names a command this plugin "
+                            L"runs, so installing one stays something you do on purpose.";
+                    int yn = MessageBoxW(g_nppData._nppHandle, body.c_str(),
+                        L"PipeHat \x2014 Updates Available", MB_YESNO | MB_ICONINFORMATION);
+                    if (yn == IDYES)
+                        for (const auto& u : toOpen)
+                            ShellExecuteW(nullptr, L"open", u.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                }
+
+                // Metadata only -- names and versions, never message content.
+                logEvent(L"UPDATE", L"Check complete; " +
+                    std::to_wstring(rep->providers.size()) + L" provider(s), " +
+                    std::to_wstring(toOpen.size()) + L" behind");
+
+                delete rep;
             }
             return 0;
         }

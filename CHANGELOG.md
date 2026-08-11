@@ -6,6 +6,35 @@ All notable changes to PipeHat. Versions follow [semantic versioning](https://se
 
 ## [Unreleased]
 
+### Added
+
+- **Check for Updates now covers provider packages, not just the plugin.** A
+  `.provider` may declare `version`, `updatecheck` (`owner/repo`) and an optional
+  `updateurl`; one menu action reports the plugin and every package that declared
+  both a version and a repo, in a single dialog. Packages that declare neither are
+  not checked and say so, so a quiet report is distinguishable from a failed one.
+
+  **It reports and opens a page. It does not download or install, and that is
+  deliberate.** A `.provider` names a *command PipeHat executes*, so an updater
+  that fetched and activated one would let a remote artifact decide what runs on
+  a workstation with PHI access. Reading a version string cannot execute
+  anything; fetching a payload and activating it can. Downloading is a different
+  feature with a different risk class and it needs pinned hashes, a staging
+  folder that is never the live one, and a user-performed install step before it
+  is defensible. Do not "finish" this by adding a downloader.
+
+  Mechanically it reuses what was already there: `fetchLatestTag` unchanged,
+  `isNewerVersion` unchanged, still user-initiated, still off the UI thread, and
+  the provider list is snapshotted on the UI thread so the worker never touches
+  `g_providers` while `loadProviders()` might run. A malformed `updatecheck` (no
+  slash, or containing spaces) is rejected at parse rather than carried into a
+  lookup or handed to `ShellExecute` as if it were a link. At most five pages
+  open at once.
+
+  17 assertions added to `tests/TransformProviderTest.cpp` section [7], covering
+  the half-configured cases that gate the network call: a version with nowhere to
+  look, and a repo with nothing to compare against. Both stay silent.
+
 ## [2.2.0] -- 2026-08-07
 
 Everything below was found or hardened by running the plugin against real

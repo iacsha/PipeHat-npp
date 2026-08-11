@@ -29,6 +29,12 @@
 //     iris.timeout = 20000
 //     iris.desc    = InterSystems IRIS DTL
 //
+// Optionally, so Check for Updates can say a package is behind:
+//
+//     iris.version     = 1.2.0
+//     iris.updatecheck = owner/repo
+//     iris.updateurl   = https://example.invalid/releases
+//
 // Header-only so it needs no CMake wiring. No NPP or Scintilla dependency --
 // `run()` is pure Win32 and is exercised standalone by
 // tests/TransformProviderTest.cpp.
@@ -40,6 +46,26 @@ struct Provider {
     std::wstring workdir;      // optional; empty = inherit PipeHat's
     std::wstring desc;         // optional; shown in the picker
     DWORD timeoutMs = 15000;   // a hung engine must never freeze Notepad++
+
+    // ── Update reporting (v2.3) ───────────────────────────────────────────
+    //
+    // Check-only, deliberately. PipeHat reports that a package is behind and
+    // opens a page; it never downloads, unpacks, or activates anything.
+    //
+    // That restraint is the design, not a missing feature. A `.provider` names
+    // a COMMAND THIS PLUGIN EXECUTES, so auto-updating providers would mean a
+    // remote artifact deciding what runs on a clinical workstation with PHI
+    // access. Fetching a version string cannot execute anything; fetching a
+    // payload and activating it can. Do not "finish" this by adding a
+    // downloader -- that is a different feature with a different risk class
+    // and it needs signing and pinning before it is defensible.
+    std::wstring version;      // installed version, e.g. "1.2.0" or "v1.2.0"
+    std::wstring updateRepo;   // "owner/repo" on GitHub; enables the check
+    std::wstring updateUrl;    // page to open; defaults to the repo's releases
+
+    // Only worth checking when we know both what is installed and where to
+    // look. Either one alone tells the user nothing actionable.
+    bool checkable() const { return !version.empty() && !updateRepo.empty(); }
 };
 
 struct RunResult {
@@ -243,6 +269,15 @@ public:
             L"#   <name>.workdir = working directory          (optional)\r\n"
             L"#   <name>.timeout = milliseconds               (optional, default 15000)\r\n"
             L"#   <name>.desc    = description for the picker (optional)\r\n"
+            L"#\r\n"
+            L"# Update reporting (optional). Check for Updates will say when a\r\n"
+            L"# package is behind. It only ever reports and opens a page -- it\r\n"
+            L"# never downloads or installs, because a provider names a command\r\n"
+            L"# this plugin runs.\r\n"
+            L"#\r\n"
+            L"#   <name>.version     = installed version, e.g. 1.2.0\r\n"
+            L"#   <name>.updatecheck = owner/repo on GitHub\r\n"
+            L"#   <name>.updateurl   = page to open (optional; defaults to releases)\r\n"
             L"# '#' begins a comment.\r\n"
             L"#\r\n"
             L"# DROP-IN PROVIDERS\r\n"
@@ -309,6 +344,16 @@ private:
         Provider& p = slot(name);
         if      (attr == L"command") p.command = val;
         else if (attr == L"desc")    p.desc    = val;
+        else if (attr == L"version") p.version = val;
+        else if (attr == L"updateurl") p.updateUrl = val;
+        else if (attr == L"updatecheck") {
+            // "owner/repo" only. Not a full URL, because this value is fed to
+            // a releases-API lookup rather than opened -- keeping it a bare
+            // pair means a malformed entry fails the lookup instead of
+            // becoming a link we hand to ShellExecute.
+            if (val.find(L'/') != std::wstring::npos && val.find(L' ') == std::wstring::npos)
+                p.updateRepo = val;
+        }
         else if (attr == L"workdir") {
             // A relative workdir means "the folder this provider file is in",
             // which is what turns a hand-edited absolute path into a folder you

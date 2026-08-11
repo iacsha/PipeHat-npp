@@ -158,7 +158,21 @@ contract instead.
   is not visible, it falls back to `IDM_FILE_NEW` plus the same "move it over" guidance
   `cmdCompareViews` already gives.
 
+- **Update reporting (optional per package).** A `.provider` may add `<name>.version`,
+  `<name>.updatecheck = owner/repo` and `<name>.updateurl`. `Provider::checkable()` is true
+  only when version *and* repo are both set; **Check for Updates** then reports the plugin
+  plus every checkable package in one dialog. The provider list is snapshotted on the UI
+  thread before the worker starts, same rule as `runProvider`. A malformed `updatecheck` is
+  dropped at parse so it can never reach `ShellExecute` as a link.
+
 **Transform-provider invariants -- do not regress:**
+
+- **Update reporting must never become an updater.** A `.provider` names a command this
+  plugin executes, so downloading and activating one would let a remote artifact decide
+  what runs on a workstation with PHI access. Reading a version string cannot execute
+  anything. If a downloader is ever wanted it needs pinned hashes, a staging folder that is
+  never the live one, and an install step the user performs -- design it as a separate
+  feature, do not grow it out of `cmdCheckUpdates`.
 
 - **Never run a provider on the UI thread.** A hung engine must not freeze Notepad++;
   `timeoutMs` terminates it and the result comes back via the hidden window.
