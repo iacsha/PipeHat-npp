@@ -7,7 +7,7 @@ phase: verify
 progress: 33/38
 mode: interactive
 started: 2026-08-25T13:12:03Z
-updated: 2026-08-25T13:12:03Z
+updated: 2026-08-25T16:52:00Z
 ---
 
 # PipeHat ISA
@@ -236,6 +236,25 @@ from 25 to 26 (the array is sized exactly).
 
 **ISC-38**: `confirmWrappedBeforeSend` is called by both `cmdMllpSend` and `cmdMllpReplay`
 before any bytes leave; it defaults to No and names the offending line numbers.
+
+### Release v2.3.0
+
+Tagged `v2.3.0` (`de18554`) 2026-08-25. Tag-triggered workflow run 32873658912 completed
+success: full Release build, all six standalone harnesses green, `PipeHat-v2.3.0-x64.zip`
+(256,748 bytes) attached to the GitHub release.
+
+Asset verified by extraction rather than by exit code. The zip contains
+`PipeHat/PipeHat.dll` (540,160 bytes) plus README, CHANGELOG and LICENSE, laid out so it
+unpacks straight into the Notepad++ plugins folder. The DLL is PE machine `0x8664` (x64),
+exports all six Notepad++ ABI entry points (`setInfo`, `getName`, `getFuncsArray`,
+`beNotified`, `messageProc`, `isUnicode`), and carries the UTF-16 literals
+`Join Wrapped Segments`, `Line break inside segment` and `2.3.0`, so the release build is
+the feature build and not a stale artifact.
+
+Gap noted, not fixed: the DLL has no `VERSIONINFO` resource, so Windows file properties show
+an empty File version. The plugin reports its own version from `HL7_PLUGIN_VERSION`, so
+nothing depends on it, but the file looks unversioned to anything that inspects it from
+outside.
 
 ### Open
 
