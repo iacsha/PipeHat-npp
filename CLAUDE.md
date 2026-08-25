@@ -150,7 +150,7 @@ contract instead.
 - `main.cpp` glue: `cmdTransformWith` (`Ctrl+Alt+Shift+X`, `TrackPopupMenu` picker -- no `.rc`
   template, no new resource IDs; a single provider skips the picker), `cmdTransformAgain`
   (`Ctrl+Alt+Shift+A`, re-runs `g_lastProvider`), `runProvider` (reads the doc on the UI
-  thread, runs on a worker, posts `WM_TRANSFORM_RESULT`). **25 menu items** total; note
+  thread, runs on a worker, posts `WM_TRANSFORM_RESULT`). **26 menu items** total; note
   `g_funcItems[]` is sized exactly -- adding an item means bumping the array.
 - The result is written straight into the **other view's** Scintilla, then `cmdCompareViews()`
   runs so changed fields are boxed in both panes. Writing directly avoids NPP's
@@ -221,7 +221,13 @@ is a local reimplementation of the NPP docking structs.
   unscrubbed; `cmdScrubPHI` reports a success count, so a parse gap becomes a silent PHI
   leak. Scrub edits also do not empty the Scintilla undo buffer -- originals are Ctrl+Z
   recoverable unless `SCI_EMPTYUNDOBUFFER` is called.
-- **Segment IDs are `A-Z` then two of `A-Z0-9` -- the digits are not optional.** `PV1`, `NK1`,
+- **Segment IDs are `A-Z` then two of `A-Z0-9`, plus a fourth `A-Z0-9` when the first
+  character is `Z`.** Sites ship four-character custom segments (`ZQRY`); before v2.3.0 those
+  were read as message text, so they lost header styling, tree nodes and PHI-scrub coverage.
+  The widening is restricted to a `Z` prefix on purpose: a general four-character rule would
+  reopen the prose-rejection guard and start matching `OBXA|1` and wrapped segment tails.
+  `tests/FieldPathTest.cpp` section [2] holds the anti-cases -- run it after touching this.
+  The digits are not optional. `PV1`, `NK1`,
   `GT1`, `IN1`, `IN2`, `PD1`, `DG1`, `PR1`, `PV2` carry the heaviest PHI in a message, and
   `cmdScrubPHI` skips any line whose segment ID comes back empty (`if (segId.empty()) continue;`).
   An all-alpha check here silently leaks guarantor SSNs while reporting a clean scrub -- this
@@ -233,6 +239,16 @@ is a local reimplementation of the NPP docking structs.
   fail-closed pair; it uses `rawSegmentID` in `main.cpp` and must stay permissive. Routing it
   through `extractSegmentID` is what made the C6 leak invisible to its own safety net. Any
   "safety net" sharing a dependency with the thing it audits is decorative.
+- **Wrapped-segment detection has one derivation: `hl7val::continuationLines`.** The styler,
+  the hover warning, the validator finding, **Join Wrapped Segments** and the MLLP pre-send
+  guards all reduce to it (`collectContinuationLines` in `main.cpp` runs it per `MessageSpan`
+  with that span's own delimiters -- scanning a `!`-delimited message with `|` reports every
+  line as wrapped). A second opinion here would let the editor show damage the send path does
+  not warn about, which is the failure this feature exists to prevent. The join deletes the
+  break and inserts nothing: the wrap lands mid-value, so an inserted character corrupts the
+  data it is meant to rescue.
+- **Run `tests/FieldPathTest.cpp` after touching `HL7Lexer`, `Validator.h` or
+  `HL7DataTypes.h`** (build line in the file header). Standalone, exits non-zero on failure.
 - **Run `tests/SegmentIDTest.cpp` after touching the lexer or the PHI map** (build line in the
   file header). It is standalone -- links only `HL7Lexer.cpp` + `PHIScrubber.cpp`, no Windows
   deps -- and exits non-zero on failure.

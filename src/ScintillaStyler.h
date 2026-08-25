@@ -37,4 +37,9 @@ private:
 
     sptr_t sci(unsigned int msg, uptr_t wParam = 0, sptr_t lParam = 0);
     void sciV(unsigned int msg, uptr_t wParam = 0, sptr_t lParam = 0);
+
+    // Segment ID of the segment `line` continues, or empty when `line` is not the
+    // tail of a segment split across a line break. Scans upward, so it works the
+    // same for a full restyle and for the incremental SCN_MODIFIED range.
+    std::wstring continuationOwner(HL7Lexer& lexer, int line);
 };

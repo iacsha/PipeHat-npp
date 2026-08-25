@@ -8,6 +8,45 @@ All notable changes to PipeHat. Versions follow [semantic versioning](https://se
 
 ### Added
 
+- **Hover tooltips now resolve the full field path, not just the field.** Hovering
+  the city in `NK1-4` reports `NK1-4.3`, with the repetition in brackets when the
+  field repeats (`PID-3[2].1`) and the subcomponent when there is one
+  (`PID-3.4.2`). Where the field's data type is a known composite, the component's
+  name is shown beside it (`XAD.3` renders as `City`), from a new header-only
+  `HL7DataTypes.h` covering 26 composite types.
+
+  The resolution happens in the lexer, in a new `HL7Lexer::getPathAtPosition`, not
+  in the tooltip. `getFieldIndexAtPosition` is now a one-line wrapper over it, so
+  the tree, the PHI scrubber, the conformance check and the caret-field highlight
+  cannot drift from what the tooltip says. A field with no component separator
+  reports no component rather than a misleading `.1`.
+
+- **Four-character `Z` segments are recognized as segments.** `ZQRY` was being
+  treated as message text: no bold blue header, no tree node, and no PHI-scrub
+  coverage on that line. Widened in `extractSegmentID` and `validSegId`, and
+  deliberately only for a `Z` prefix, so the prose-rejection guard that keeps
+  `THE QUICK BROWN FOX` and `OBXA|1` from being read as segments stays intact.
+
+- **Mid-segment line breaks are detected, flagged and repairable.** Pasting a
+  message out of a chat client wraps long segments; because a line break *is* the
+  segment terminator on the wire, the tail of a wrapped `PV1` is sent as its own
+  bogus segment and the receiver rejects or mis-parses the message.
+
+  Three surfaces: continuation lines are styled with a pink EOL-filled wash so the
+  damage is visible without running anything; hovering one says which segment it
+  belongs to; **Join Wrapped Segments** (`Ctrl+Alt+Shift+J`) deletes the breaks
+  under a single undo action. The join inserts nothing in place of the break, as
+  the wrap landed mid-value and any inserted character would corrupt the data it
+  is meant to rescue. **Send Message (MLLP)** and **Replay All Messages (MLLP)**
+  now warn before transmitting a document that contains one, defaulting to "no".
+
+  The validator names the wrapped segment (`Line break inside segment PV1`) rather
+  than reporting the tail as an invalid segment ID, which was the misleading
+  message it produced before. Detection runs per message with that message's own
+  delimiters, so a `!`-delimited message is not reported as entirely wrapped.
+
+  **26 menu items** total.
+
 - **Check for Updates now covers provider packages, not just the plugin.** A
   `.provider` may declare `version`, `updatecheck` (`owner/repo`) and an optional
   `updateurl`; one menu action reports the plugin and every package that declared

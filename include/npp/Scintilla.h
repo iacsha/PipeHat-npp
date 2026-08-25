@@ -31,6 +31,7 @@ typedef sptr_t (*SciFnDirect)(sptr_t ptr, unsigned int iMessage, uptr_t wParam, 
 #define SCI_STYLESETFORE 2051
 #define SCI_STYLESETBACK 2052
 #define SCI_STYLESETBOLD 2053
+#define SCI_STYLESETEOLFILLED 2057
 #define SCI_STYLESETITALIC 2054
 #define SCI_STYLESETSIZE 2055
 #define SCI_STYLESETFONT 2056

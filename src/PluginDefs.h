@@ -12,12 +12,15 @@
 #define SCE_HL7_FIELD_VALUE 8
 #define SCE_HL7_COMMENT 9
 #define SCE_HL7_FIELD_VALUE_ALT 10  // alternate field shade (every other field)
+// A line that continues the segment above it (a segment split by a paste). Styled
+// whole-line so the damage is visible without running a validation pass.
+#define SCE_HL7_CONTINUATION 11
 
 #define HL7_PLUGIN_NAME L"PipeHat"
 // Keep in sync with the git tag: Check for Updates compares this against the latest
 // GitHub release tag (parseVer skips the leading 'v', so "v2.0.0" matches "2.0.0").
 // A mismatch makes the updater lie in one direction or the other.
-#define HL7_PLUGIN_VERSION L"2.2.0"
+#define HL7_PLUGIN_VERSION L"2.3.0"
 #define HL7_PLUGIN_TAGLINE L"HL7 v2.x for Notepad++"
 #define HL7_PLUGIN_DLL L"PipeHat.dll"
 

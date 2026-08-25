@@ -131,7 +131,7 @@ static int g_healCount = 0;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[25];
+static FuncItem g_funcItems[26];
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -153,6 +153,7 @@ static ShortcutKey g_skNextMsg;
 static ShortcutKey g_skPrevMsg;
 static ShortcutKey g_skXform;
 static ShortcutKey g_skXformAgain;
+static ShortcutKey g_skJoin;
 
 // ── Helpers ──
 static HWND getCurrentScintilla() {
@@ -307,6 +308,63 @@ static hl7::MessageIndex buildIndex(SciFnDirect fn, sptr_t ptr) {
     hl7::MessageIndex idx;
     idx.build(lineCount, [fn, ptr](int i) { return getLineW(fn, ptr, i); });
     return idx;
+}
+
+// Lines that are the tail of a segment split across a line break, in document
+// coordinates. Copying a message out of a chat client wraps long segments; the send
+// path normalizes every newline to CR, so the wrap becomes a real segment terminator
+// on the wire and the receiver sees a segment that does not exist. Shared by the join
+// command and the pre-send guards -- one derivation, so they cannot disagree about
+// whether a document is damaged.
+static std::vector<int> collectContinuationLines(SciFnDirect fn, sptr_t ptr) {
+    int lineCount = (int)fn(ptr, SCI_GETLINECOUNT, 0, 0);
+    std::vector<std::wstring> lines;
+    lines.reserve(lineCount);
+    for (int li = 0; li < lineCount; li++) lines.push_back(getLineW(fn, ptr, li));
+
+    hl7::MessageIndex index = buildIndex(fn, ptr);
+    std::vector<int> out;
+
+    if (index.empty()) {
+        HL7Delimiters d;
+        return hl7val::continuationLines(lines, d.fieldSep);
+    }
+
+    // Per message, with that message's own separators -- a '!'-delimited message
+    // scanned with '|' reports every one of its lines as wrapped.
+    for (const auto& span : index.spans()) {
+        std::vector<std::wstring> slice(lines.begin() + span.startLine,
+                                        lines.begin() + span.endLine + 1);
+        for (int rel : hl7val::continuationLines(slice, span.delims.fieldSep))
+            out.push_back(rel + span.startLine);
+    }
+    return out;
+}
+
+// Pre-transmission guard. Returns false when the user chooses not to send. Sending a
+// wrapped segment is the exact failure this feature exists to prevent, so the warning
+// defaults to "no".
+static bool confirmWrappedBeforeSend(SciFnDirect fn, sptr_t ptr, const wchar_t* title) {
+    std::vector<int> cont = collectContinuationLines(fn, ptr);
+    if (cont.empty()) return true;
+
+    std::wstring msg =
+        L"This document has " + std::to_wstring(cont.size()) +
+        (cont.size() == 1 ? L" line that continues" : L" lines that continue") +
+        L" the segment above it (line" + (cont.size() == 1 ? L" " : L"s ");
+    for (size_t i = 0; i < cont.size() && i < 10; i++) {
+        if (i) msg += L", ";
+        msg += std::to_wstring(cont[i] + 1);
+    }
+    if (cont.size() > 10) msg += L", ...";
+    msg += L").\r\n\r\nSegments are terminated by the line break, so each of those lines "
+           L"will be sent as a separate segment and the receiver will reject or "
+           L"mis-parse the message.\r\n\r\nRun Join Wrapped Segments first.\r\n\r\n"
+           L"Send anyway?";
+
+    return MessageBoxW(g_nppData._nppHandle, msg.c_str(), title,
+                       MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 |
+                       MB_SETFOREGROUND | MB_TOPMOST) == IDYES;
 }
 
 // Independent segment-ID derivation for the anonymize-mode coverage check.
@@ -1453,6 +1511,8 @@ static void cmdMllpReplay() {
     SciFnDirect fn = view.fnDirect;
     sptr_t ptr = view.ptrDirect;
 
+    if (!confirmWrappedBeforeSend(fn, ptr, L"PipeHat MLLP \x2014 Wrapped Segment")) return;
+
     // MessageIndex already knows where every message starts and ends -- the same map
     // the tree and the scrubber use. Replay is mostly a consequence of having it.
     hl7::MessageIndex index = buildIndex(fn, ptr);
@@ -1550,6 +1610,8 @@ static void cmdMllpSend() {
                     L"PipeHat MLLP", MB_OK | MB_ICONINFORMATION);
         return;
     }
+    if (!confirmWrappedBeforeSend(view.fnDirect, view.ptrDirect,
+                                  L"PipeHat MLLP \x2014 Wrapped Segment")) return;
     if (!confirmCleartextOnce()) return;
 
     int len = (int)view.fnDirect(view.ptrDirect, SCI_GETLENGTH, 0, 0);
@@ -1783,6 +1845,57 @@ static void cmdPrettyPrint() {
     view.styler.styleAll();
     setFoldLevels(view);
     g_treeView.refresh(view.hWnd, view.fnDirect, view.ptrDirect, view.lexer, g_segmentDB);
+}
+
+// Repair for segments split across a line break by a chat client, mail client or
+// terminal. The break is deleted and nothing is inserted in its place: the wrap landed
+// in the middle of a field value, so any inserted character would corrupt the data it
+// is meant to rescue.
+static void cmdJoinWrappedSegments() {
+    ScintillaView& view = getCurrentView();
+    if (!view.isHL7 || !view.fnDirect) {
+        MessageBoxW(g_nppData._nppHandle, L"No HL7 document is currently active.",
+                    L"Join Wrapped Segments", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    SciFnDirect fn = view.fnDirect;
+    sptr_t ptr = view.ptrDirect;
+
+    std::vector<int> cont = collectContinuationLines(fn, ptr);
+    if (cont.empty()) {
+        MessageBoxW(g_nppData._nppHandle,
+            L"No wrapped segments found. Every line in this document starts with a "
+            L"segment ID.", L"Join Wrapped Segments",
+            MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
+        return;
+    }
+
+    // Descending, so each deletion leaves the positions of the remaining ones intact.
+    fn(ptr, SCI_BEGINUNDOACTION, 0, 0);
+    for (int i = (int)cont.size() - 1; i >= 0; i--) {
+        int li = cont[i];
+        if (li <= 0) continue;
+        sptr_t from = fn(ptr, SCI_GETLINEENDPOSITION, li - 1, 0);
+        sptr_t to   = fn(ptr, SCI_POSITIONFROMLINE, li, 0);
+        if (to <= from) continue;
+        fn(ptr, SCI_SETTARGETRANGE, (uptr_t)from, to);
+        fn(ptr, SCI_REPLACETARGET, 0, (sptr_t)"");
+    }
+    fn(ptr, SCI_ENDUNDOACTION, 0, 0);
+
+    view.lexer.reset();
+    view.styler.styleAll();
+    setFoldLevels(view);
+    g_treeView.refresh(view.hWnd, view.fnDirect, view.ptrDirect, view.lexer, g_segmentDB);
+
+    logEvent(L"Repair", L"Joined " + std::to_wstring(cont.size()) + L" wrapped segment line(s)");
+
+    std::wstring msg = L"Joined " + std::to_wstring(cont.size()) +
+                       (cont.size() == 1 ? L" wrapped line back into the segment above it."
+                                         : L" wrapped lines back into the segments above them.") +
+                       L"\r\n\r\nCtrl+Z undoes this.";
+    MessageBoxW(g_nppData._nppHandle, msg.c_str(), L"Join Wrapped Segments",
+                MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST);
 }
 
 // Structural validation / malform detection. Advisory only (never blocking):
@@ -2526,6 +2639,7 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skPrevMsg    = { true, true, true, VK_PRIOR };        // Ctrl+Alt+Shift+PgUp -- previous message
     g_skXform      = { true, true, true, 'X' };             // Ctrl+Alt+Shift+X  -- transform with... (picker)
     g_skXformAgain = { true, true, true, 'A' };             // Ctrl+Alt+Shift+A  -- transform again (last provider)
+    g_skJoin       = { true, true, true, 'J' };             // Ctrl+Alt+Shift+J  -- join wrapped segments
 
     g_nbFuncItems = 0;
 
@@ -2604,6 +2718,13 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_funcItems[g_nbFuncItems]._pShKey = &g_skPretty;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Join Wrapped Segments");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdJoinWrappedSegments;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skJoin;
     g_nbFuncItems++;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Toggle HL7 Folding");

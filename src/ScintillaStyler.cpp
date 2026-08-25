@@ -6,6 +6,7 @@
 #include "TriggerEventDB.h"
 #include "HL7Escape.h"
 #include "MessageIndex.h"
+#include "HL7DataTypes.h"
 #include <string>
 #include <vector>
 #include <cstring>
@@ -61,6 +62,13 @@ void ScintillaStyler::defineStyles() {
     sciV(SCI_STYLESETFORE, SCE_HL7_FIELD_VALUE_ALT, 0x202020);
     sciV(SCI_STYLESETBACK, SCE_HL7_FIELD_VALUE_ALT, 0xF7F0E6);  // very light blue-gray
 
+    // A segment split across lines. Deliberately the loudest thing on screen: this
+    // is damage that otherwise looks like ordinary text and breaks a transmission.
+    sciV(SCI_STYLESETFORE, SCE_HL7_CONTINUATION, 0x1010A0);   // dark red text
+    sciV(SCI_STYLESETBACK, SCE_HL7_CONTINUATION, 0xD0D0FF);   // pink wash
+    sciV(SCI_STYLESETBOLD, SCE_HL7_CONTINUATION, 1);
+    sciV(SCI_STYLESETEOLFILLED, SCE_HL7_CONTINUATION, 1);     // wash runs to the margin
+
     enableTooltips(true);
 }
 
@@ -87,7 +95,18 @@ void ScintillaStyler::showFieldTooltip(int position, HL7Lexer& lexer, SegmentDB&
     if (wlen <= 0) return;
 
     std::wstring segId = lexer.extractSegmentID(wline.c_str(), wlen);
-    if (segId.empty()) return;
+    if (segId.empty()) {
+        // Not a segment. If a real segment sits above it, this line is the tail of a
+        // segment split by a paste -- the failure that silently breaks a transmission.
+        // Say so here, where the reader already has the pointer.
+        std::wstring owner = continuationOwner(lexer, line);
+        if (owner.empty()) return;
+        std::string tip = "\xE2\x9A\xA0 Line break inside segment " + toUtf8(owner) +
+                          "\r\nThis line continues the segment above and will be sent as a "
+                          "separate segment.\r\nUse Join Wrapped Segments to repair it.";
+        sciV(SCI_CALLTIPSHOW, position + 1, (sptr_t)tip.c_str());
+        return;
+    }
 
     // Get UTF-8 byte position within the line, clamped to the (EOL-stripped) content
     int lineStart = (int)sci(SCI_POSITIONFROMLINE, line);
@@ -99,7 +118,8 @@ void ScintillaStyler::showFieldTooltip(int position, HL7Lexer& lexer, SegmentDB&
     int wcharOffset = MultiByteToWideChar(CP_UTF8, 0, lineU8.data(), byteOffset, nullptr, 0);
     if (wcharOffset < 0) wcharOffset = byteOffset; // fallback
 
-    int fieldIdx = lexer.getFieldIndexAtPosition(wline.c_str(), wlen, wcharOffset);
+    HL7FieldPath path = lexer.getPathAtPosition(wline.c_str(), wlen, wcharOffset);
+    int fieldIdx = path.field;
 
     char tipText[512];
     const HL7SegmentDef* segDef = segDB.lookup(segId);
@@ -109,24 +129,49 @@ void ScintillaStyler::showFieldTooltip(int position, HL7Lexer& lexer, SegmentDB&
         if (segDef) {
             snprintf(tipText, sizeof(tipText), "%s \xE2\x96\xB6 %s",
                      toUtf8(segId).c_str(), toUtf8(segDef->name).c_str());
+        } else if (!segId.empty() && segId[0] == L'Z') {
+            // Z segments are site-defined by design; "Unknown segment" reads like a
+            // parse failure for something that is working exactly as intended.
+            snprintf(tipText, sizeof(tipText), "%s \xE2\x96\xB6 Site-defined Z segment",
+                     toUtf8(segId).c_str());
         } else {
             snprintf(tipText, sizeof(tipText), "%s \xE2\x96\xB6 Unknown segment",
                      toUtf8(segId).c_str());
         }
     } else {
         const HL7FieldDef* fieldDef = segDB.lookupField(segId, fieldIdx);
+
+        // Full address, not just the field: hovering the third component of NK1-4
+        // has to read "NK1-4.3" or the reader still has to count carets by hand.
+        std::string pathStr = toUtf8(segId) + "-" + std::to_string(fieldIdx);
+        if (path.repeat > 1) pathStr += "[" + std::to_string(path.repeat) + "]";
+        if (path.component > 0) {
+            pathStr += "." + std::to_string(path.component);
+            if (path.subcomponent > 0) pathStr += "." + std::to_string(path.subcomponent);
+        }
+
+        // Name of the component within its data type, when the type is tabled.
+        std::string compName;
+        if (fieldDef && path.component > 0) {
+            std::wstring cn = hl7dt::componentName(fieldDef->dataType, path.component);
+            if (!cn.empty()) compName = " \xE2\x96\xB6 " + toUtf8(cn);
+        }
+
         if (fieldDef) {
-            snprintf(tipText, sizeof(tipText), "%s-%d: %s  [%s%s]",
-                     toUtf8(segId).c_str(), fieldIdx,
+            snprintf(tipText, sizeof(tipText), "%s: %s%s  [%s%s]",
+                     pathStr.c_str(),
                      toUtf8(fieldDef->name).c_str(),
+                     compName.c_str(),
                      toUtf8(fieldDef->dataType).c_str(),
                      fieldDef->required ? ", Required" : "");
         } else if (segDef) {
-            snprintf(tipText, sizeof(tipText), "%s-%d: (field %d of %s)",
-                     toUtf8(segId).c_str(), fieldIdx,
-                     fieldIdx, toUtf8(segDef->name).c_str());
+            snprintf(tipText, sizeof(tipText), "%s: (field %d of %s)",
+                     pathStr.c_str(), fieldIdx, toUtf8(segDef->name).c_str());
+        } else if (segId[0] == L'Z') {
+            snprintf(tipText, sizeof(tipText), "%s: (site-defined Z segment)",
+                     pathStr.c_str());
         } else {
-            snprintf(tipText, sizeof(tipText), "%s-%d", toUtf8(segId).c_str(), fieldIdx);
+            snprintf(tipText, sizeof(tipText), "%s", pathStr.c_str());
         }
 
         // Decode coded values (MSH-9 message type / trigger event, EVN-1 event) onto
@@ -172,6 +217,21 @@ void ScintillaStyler::styleAll() {
     styleRange(0, length);
 }
 
+std::wstring ScintillaStyler::continuationOwner(HL7Lexer& lexer, int line) {
+    // Bounded so a document of prose under a stray segment cannot turn a restyle
+    // into a full-buffer walk per line.
+    const int kMaxLookback = 64;
+    for (int i = line - 1, n = 0; i >= 0 && n < kMaxLookback; i--, n++) {
+        std::wstring prev = getLineW(m_sciFn, m_sciPtr, i);
+        size_t b = prev.find_first_not_of(L" \t\r\n");
+        if (b == std::wstring::npos) return std::wstring();   // blank line ends the run
+        std::wstring seg = lexer.extractSegmentID(prev.c_str() + b, (int)(prev.size() - b));
+        if (!seg.empty()) return seg;
+        // else: prev is itself a continuation (a segment can wrap more than once)
+    }
+    return std::wstring();
+}
+
 void ScintillaStyler::styleRange(int startPos, int endPos) {
     if (endPos <= startPos) return;
 
@@ -201,6 +261,21 @@ void ScintillaStyler::styleRange(int startPos, int endPos) {
         std::wstring wline = getLineW(m_sciFn, m_sciPtr, line);
         if (!wline.empty()) {
             lexer.setDelimiters(index.delimitersFor(line));
+
+            // A segment wrapped by a paste is not a parse error the reader can see:
+            // the text is all there, just on two lines, and the MLLP send path turns
+            // that break into a real segment terminator. Colour the whole tail line
+            // so the damage is visible in the same glance as the bold-blue headers.
+            bool isContinuation =
+                lexer.extractSegmentID(wline.c_str(), (int)wline.size()).empty() &&
+                !continuationOwner(lexer, line).empty();
+
+            if (isContinuation) {
+                sciV(SCI_SETSTYLING, lineBytes, SCE_HL7_CONTINUATION);
+                styledBytes = lineBytes;
+                continue;
+            }
+
             std::vector<HL7Token> tokens;
             lexer.tokenize(wline.c_str(), (int)wline.size(), tokens);
 

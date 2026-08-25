@@ -9,6 +9,59 @@ namespace {
 inline bool isSegAlpha(wchar_t c) { return c >= L'A' && c <= L'Z'; }
 inline bool isSegAlnum(wchar_t c) { return (c >= L'A' && c <= L'Z') || (c >= L'0' && c <= L'9'); }
 
+// Advance past an escape sequence starting at pos, matching tokenize()'s rule: an
+// escape never crosses a field separator, and an unclosed one is a literal character.
+// Every walker in this file has to agree on this or field counting drifts on MSH-2.
+inline int skipEscape(const wchar_t* line, int limit, int pos, wchar_t escSep, wchar_t fieldSep) {
+    int scan = pos + 1;
+    bool closed = false;
+    while (scan < limit) {
+        wchar_t sc = line[scan];
+        if (sc == fieldSep || sc == L'\r' || sc == L'\n') break;
+        if (sc == escSep) { closed = true; break; }
+        scan++;
+    }
+    return closed ? (scan + 1) : (pos + 1);
+}
+
+// Count which 1-based slice of [start,end) charPos falls in, splitting on sep.
+// Also reports whether the range contains sep at all -- an absent separator means
+// "this level has no sub-structure", which the caller renders as 0, not 1.
+struct SliceResult {
+    int index = 1;
+    int start = 0;
+    int end = 0;
+    bool hasSep = false;
+};
+
+inline SliceResult sliceAt(const wchar_t* line, int start, int end, int charPos,
+                           wchar_t sep, wchar_t escSep, wchar_t fieldSep) {
+    SliceResult r;
+    r.start = start;
+    r.end = end;
+
+    for (int q = start; q < end; ) {
+        if (line[q] == escSep) { q = skipEscape(line, end, q, escSep, fieldSep); continue; }
+        if (line[q] == sep) { r.hasSep = true; break; }
+        q++;
+    }
+    if (!r.hasSep) return r;
+
+    int q = start;
+    while (q < end) {
+        if (line[q] == escSep) { q = skipEscape(line, end, q, escSep, fieldSep); continue; }
+        if (line[q] == sep) {
+            if (charPos <= q) { r.end = q; return r; }
+            r.index++;
+            q++;
+            r.start = q;
+            continue;
+        }
+        q++;
+    }
+    return r;
+}
+
 } // namespace
 
 HL7Lexer::HL7Lexer() {
@@ -66,6 +119,19 @@ std::wstring HL7Lexer::extractSegmentID(const wchar_t* line, int lineLen) const 
     // non-'|' separator before m_delimiters holds anything trustworthy.
     if (a == L'M' && b == L'S' && c == L'H') return L"MSH";
 
+    // Site-defined Z segments are the one dialect that is four characters wide
+    // (ZQRY, ZPID, ZINS). A three-character-only reader returns "" for them, and an
+    // empty segment ID is not a cosmetic miss: cmdScrubPHI skips the line, the tree
+    // drops the node, MessageIndex never sees it, and the only visible symptom is
+    // that the header is not blue.
+    //
+    // Widened for 'Z' only, and only when the field separator (or EOL) follows. Any
+    // four-character run would reopen the prose hole the delimiter check below closes.
+    if (a == L'Z' && start + 3 < lineLen && isSegAlnum(line[start + 3]) &&
+        (start + 4 == lineLen || line[start + 4] == m_delimiters.fieldSep)) {
+        return std::wstring{ a, b, c, line[start + 3] };
+    }
+
     // Every other segment ID must be delimited by the field separator (or end the
     // line). Without this, any three uppercase characters -- "THE QUICK BROWN FOX"
     // -- parse as a segment and can auto-activate the plugin on prose.
@@ -81,63 +147,82 @@ bool HL7Lexer::isSegmentStart(const wchar_t* line, int lineLen) const {
     return !extractSegmentID(line, lineLen).empty();
 }
 
-int HL7Lexer::getFieldIndexAtPosition(const wchar_t* line, int lineLen, int charPos) const {
-    if (!line || lineLen == 0 || charPos < 0 || charPos >= lineLen) return -1;
+HL7FieldPath HL7Lexer::getPathAtPosition(const wchar_t* line, int lineLen, int charPos) const {
+    HL7FieldPath path;
+    if (!line || lineLen == 0 || charPos < 0 || charPos >= lineLen) return path;
+
+    const wchar_t fs = m_delimiters.fieldSep;
+    const wchar_t esc = m_delimiters.escapeSep;
 
     // Skip leading whitespace
     int pos = 0;
     while (pos < lineLen && std::iswspace(line[pos])) pos++;
 
+    std::wstring segId = extractSegmentID(line + pos, lineLen - pos);
+    const int segLen = (int)segId.size();
     // MSH-1 is the field separator itself, so the first value after it is MSH-2.
-    bool isMSH = (pos + 3 <= lineLen &&
-                  line[pos] == L'M' && line[pos + 1] == L'S' && line[pos + 2] == L'H');
+    const bool isMSH = (segId == L"MSH");
 
-    // If position is in the segment ID area
-    if (isSegmentStart(line + pos, lineLen - pos) && charPos >= pos && charPos < pos + 3) {
-        return 0; // 0 means segment ID
+    if (segLen > 0 && charPos >= pos && charPos < pos + segLen) {
+        path.field = 0; // 0 means segment ID
+        return path;
     }
 
-    // If position is at the first field separator (MSH special case)
-    if (isSegmentStart(line + pos, lineLen - pos)) {
-        pos += 3; // skip segment ID
-        if (pos < lineLen && line[pos] == m_delimiters.fieldSep) {
-            pos++; // skip first field sep
-        }
+    if (segLen > 0) {
+        pos += segLen;
+        if (pos < lineLen && line[pos] == fs) pos++; // skip the first field sep
     }
 
-    // Count fields (1-based). For MSH the first value is MSH-2, so start at 2.
+    // ---- field ----
     int fieldCount = isMSH ? 2 : 1;
+    int fieldStart = pos;
+    int fieldEnd = lineLen;
 
-    while (pos < lineLen) {
-        if (charPos < pos) break; // Past our position
-
-        wchar_t ch = line[pos];
-
-        if (ch == m_delimiters.fieldSep) {
-            if (charPos == pos) return fieldCount; // On the separator, return prev field
+    int p = pos;
+    while (p < lineLen) {
+        wchar_t ch = line[p];
+        if (ch == fs) {
+            if (charPos <= p) { fieldEnd = p; break; }  // on or before the separator
             fieldCount++;
-            pos++;
-        } else if (ch == m_delimiters.escapeSep) {
-            // Mirror tokenize(): an escape never crosses a field separator. Scan for
-            // a closing escape, but stop at a field separator or EOL so field
-            // counting stays correct on MSH-2 ("^~\&") and stray-backslash data.
-            int scan = pos + 1;
-            bool closed = false;
-            while (scan < lineLen) {
-                wchar_t sc = line[scan];
-                if (sc == m_delimiters.fieldSep || sc == L'\r' || sc == L'\n') break;
-                if (sc == m_delimiters.escapeSep) { closed = true; break; }
-                scan++;
-            }
-            pos = closed ? (scan + 1) : (pos + 1);
-        } else if (ch == L'\r' || ch == L'\n') {
-            break;
-        } else {
-            pos++;
+            p++;
+            fieldStart = p;
+            continue;
         }
+        if (ch == L'\r' || ch == L'\n') { fieldEnd = p; break; }
+        if (ch == esc) { p = skipEscape(line, lineLen, p, esc, fs); continue; }
+        p++;
     }
+    if (p >= lineLen) fieldEnd = lineLen;
 
-    return fieldCount;
+    path.field = fieldCount;
+
+    // charPos landed on the separator that opens this field (or in the segment-ID
+    // gap); there is no value under it, so there is nothing finer to report.
+    if (charPos < fieldStart || fieldStart >= fieldEnd) return path;
+
+    // ---- repetition ----
+    SliceResult rep = sliceAt(line, fieldStart, fieldEnd, charPos,
+                              m_delimiters.repeatSep, esc, fs);
+    path.repeat = rep.index;
+    if (charPos < rep.start) return path;
+
+    // ---- component ----
+    SliceResult comp = sliceAt(line, rep.start, rep.end, charPos,
+                               m_delimiters.compSep, esc, fs);
+    if (!comp.hasSep) return path;   // no caret in this repetition: stay at field depth
+    path.component = comp.index;
+    if (charPos < comp.start) return path;
+
+    // ---- subcomponent ----
+    SliceResult sub = sliceAt(line, comp.start, comp.end, charPos,
+                              m_delimiters.subcompSep, esc, fs);
+    if (sub.hasSep) path.subcomponent = sub.index;
+
+    return path;
+}
+
+int HL7Lexer::getFieldIndexAtPosition(const wchar_t* line, int lineLen, int charPos) const {
+    return getPathAtPosition(line, lineLen, charPos).field;
 }
 
 void HL7Lexer::tokenize(const wchar_t* line, int lineLen, std::vector<HL7Token>& tokens) {
@@ -151,13 +236,14 @@ void HL7Lexer::tokenize(const wchar_t* line, int lineLen, std::vector<HL7Token>&
         pos++;
     }
 
-    // Check if this line is a segment start
-    bool isSegment = isSegmentStart(line + pos, lineLen - pos);
+    // Check if this line is a segment start. Width is whatever extractSegmentID
+    // accepted (3, or 4 for a site-defined Z segment) -- hardcoding 3 here styled
+    // the last character of ZQRY as a field value and shifted every field index.
+    std::wstring segId = extractSegmentID(line + pos, lineLen - pos);
 
-    if (isSegment) {
-        // Emit segment ID token (3 chars)
-        tokens.push_back({ pos, 3, HL7TokenType::SEGMENT_ID });
-        pos += 3;
+    if (!segId.empty()) {
+        tokens.push_back({ pos, (int)segId.size(), HL7TokenType::SEGMENT_ID });
+        pos += (int)segId.size();
 
         // The character after the segment ID is the field separator
         if (pos < lineLen && line[pos] == m_delimiters.fieldSep) {

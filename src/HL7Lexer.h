@@ -27,6 +27,19 @@ struct HL7Token {
     HL7TokenType type;
 };
 
+// Full HL7 address of a character position: SEG-field[repeat].component.subcomponent.
+//
+// component/subcomponent are 0 when the enclosing level carries no separator at all,
+// which is the difference between "NK1-3" and "NK1-3.1". HL7 treats those as the same
+// value, but a reader hovering a field with no carets in it does not want a ".1"
+// appended -- it reads as though a component was found.
+struct HL7FieldPath {
+    int field = -1;        // -1 not determinable, 0 = inside the segment ID
+    int repeat = 1;        // 1-based repetition (~)
+    int component = 0;     // 1-based, 0 = field has no component separator
+    int subcomponent = 0;  // 1-based, 0 = component has no subcomponent separator
+};
+
 class HL7Lexer {
 public:
     HL7Lexer();
@@ -34,6 +47,12 @@ public:
     void parseMSH(const wchar_t* line, int lineLen);
     void tokenize(const wchar_t* line, int lineLen, std::vector<HL7Token>& tokens);
     std::wstring extractSegmentID(const wchar_t* line, int lineLen) const;
+
+    // Resolve a character position to its full HL7 path. This is the single
+    // derivation; getFieldIndexAtPosition is a thin wrapper over it so the tree,
+    // PHI scrub, conformance check and tooltip can never disagree about where a
+    // caret is.
+    HL7FieldPath getPathAtPosition(const wchar_t* line, int lineLen, int charPos) const;
 
     // Find which 1-based field index a character position falls within
     // Returns 0 if position is within a segment ID, -1 if not determinable
