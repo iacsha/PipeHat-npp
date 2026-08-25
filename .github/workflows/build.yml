@@ -1,0 +1,107 @@
+name: Build
+
+# Produces the artifact this repo cannot carry in git: PipeHat.dll is gitignored, so
+# without this workflow the only copy of a build lives on whichever machine ran cmake.
+# Every push leaves a downloadable DLL on the run page, which is how a second machine
+# (a work desktop with no toolchain) gets a build to validate.
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write        # needed only by the tag-triggered release upload
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Locate MSVC
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $install = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if (-not $install) { throw "No MSVC x64 toolset on this runner" }
+          $vcvars = Join-Path $install "VC\Auxiliary\Build\vcvars64.bat"
+          if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found at $vcvars" }
+          "VCVARS=$vcvars" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "vcvars64: $vcvars"
+
+      - name: Build plugin (Release, x64)
+        shell: pwsh
+        run: |
+          cmake -S . -B build -A x64
+          if ($LASTEXITCODE -ne 0) { throw "configure failed" }
+          cmake --build build --config Release
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          if (-not (Test-Path build\Release\PipeHat.dll)) { throw "PipeHat.dll was not produced" }
+          Get-Item build\Release\PipeHat.dll | Format-List Name,Length,LastWriteTime
+
+      # The standalone harnesses are not part of the CMake project -- each is a single
+      # translation unit plus the one or two sources it exercises, documented in its own
+      # file header. Compiled here with the same command lines those headers give, so a
+      # green run and a local run mean the same thing.
+      - name: Build standalone tests
+        shell: cmd
+        run: |
+          call "%VCVARS%" >nul
+          if not exist build\ci mkdir build\ci
+          cl /nologo /EHsc /std:c++17 /I src tests\FieldPathTest.cpp src\HL7Lexer.cpp /Fe:build\ci\FieldPathTest.exe /Fo:build\ci\ || exit /b 1
+          cl /nologo /EHsc /std:c++17 /I src tests\MessageIndexTest.cpp src\HL7Lexer.cpp /Fe:build\ci\MessageIndexTest.exe /Fo:build\ci\ || exit /b 1
+          cl /nologo /EHsc /std:c++17 /I src tests\SegmentIDTest.cpp src\HL7Lexer.cpp src\PHIScrubber.cpp /Fe:build\ci\SegmentIDTest.exe /Fo:build\ci\ || exit /b 1
+          cl /nologo /EHsc /std:c++17 /I src tests\MessageRefreshTest.cpp /Fe:build\ci\MessageRefreshTest.exe /Fo:build\ci\ || exit /b 1
+          cl /nologo /EHsc /std:c++17 /I src tests\TransformProviderTest.cpp /Fe:build\ci\TransformProviderTest.exe /Fo:build\ci\ || exit /b 1
+          cl /nologo /EHsc /std:c++17 /I src tests\TlsLoopbackTest.cpp src\TlsChannel.cpp /Fe:build\ci\TlsLoopbackTest.exe /Fo:build\ci\ || exit /b 1
+
+      - name: Run standalone tests
+        shell: pwsh
+        run: |
+          $failed = @()
+          foreach ($t in 'FieldPathTest','SegmentIDTest','MessageIndexTest',
+                         'MessageRefreshTest','TransformProviderTest','TlsLoopbackTest') {
+            Write-Host "--- $t"
+            & ".\build\ci\$t.exe"
+            if ($LASTEXITCODE -ne 0) { $failed += "$t (exit $LASTEXITCODE)" }
+          }
+          if ($failed.Count -gt 0) { throw "failing harnesses: $($failed -join ', ')" }
+          Write-Host "all harnesses passed"
+
+      # Laid out the way it is installed, so the download extracts straight into the
+      # Notepad++ plugins folder with no renaming.
+      - name: Stage plugin folder
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\PipeHat | Out-Null
+          Copy-Item build\Release\PipeHat.dll dist\PipeHat\
+          Copy-Item README.md, CHANGELOG.md, LICENSE dist\
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PipeHat-x64-${{ github.sha }}
+          path: dist/
+          retention-days: 90
+          if-no-files-found: error
+
+      # Tag pushes additionally attach the DLL to the GitHub release, so a released
+      # version has a permanent download that does not expire with the run.
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          Compress-Archive -Path dist\PipeHat, dist\README.md, dist\CHANGELOG.md, dist\LICENSE `
+                           -DestinationPath "PipeHat-$tag-x64.zip" -Force
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) { gh release create $tag --title $tag --generate-notes }
+          gh release upload $tag "PipeHat-$tag-x64.zip" --clobber
