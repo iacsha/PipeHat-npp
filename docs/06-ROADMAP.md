@@ -11,6 +11,7 @@ scoped:
 
 | Item | Priority | Notes |
 |------|----------|-------|
+| **Search / filter / query** | **P0** | **There is no way to find a message.** No field-value search, no filter, no query -- verified absent in the source, not inferred. On any log with more than a screenful of messages this is the wall a user hits first, and it is the single gap that makes a paid tool the right answer today. See below. |
 | Live third-party MLLP test | **P0** | Send/receive is verified over loopback in NPP, not yet against a real endpoint (Mirth/BridgeLink). The one claim in the docs that rests on inference rather than a test. |
 | ~~Multi-message file support~~ | ✅ done | MessageIndex is the single source of truth for boundaries + per-message delimiters; all eight former parseMSH sites migrated (parseMSH now has exactly one caller). Tree groups by message, Ctrl+Alt+Shift+PgDn/PgUp navigate. Verified in NPP on a 5-message file including a '!'-delimited message. Remaining: extract-message-to-new-tab. |
 | ~~Replay a file to an endpoint~~ + MSH-10/MSH-7 refresh | ✅ done | Replay All Messages (Ctrl+Alt+Shift+Y): one MLLP frame per message, per-message ACK, accepted/rejected/noAck/failed report. Offers MSH-10/MSH-7 refresh (MessageRefresh.h, standalone-tested). Remaining: rate limiting (sends back to back). |
@@ -34,6 +35,12 @@ scoped:
 | **Message generator + template library** | **P1** | Build a fresh `ADT^A01` / `ORU^R01` from a template instead of hunting for a sample. Pairs with MLLP send. See below. |
 | Human-readable / clinical summary view | P2 | Narrative render of a parsed message for non-integration readers. See below. |
 | Encounter timeline | P2 | Order a batch by MSH-7 and show one patient's event flow. Depends on multi-message (now shipped). See below. |
+| **Non-destructive PHI display mask** | **P1** | View-layer masking toggle that never touches the buffer. The scrub is destructive by design and empties undo; there is no way to take a screenshot or share a screen safely without altering the file. HL7Spy ships this as a toolbar toggle. Smallest item on this page relative to payoff. See below. |
+| **Document the scale ceiling** | **P1** | We do not know where PipeHat stops being usable on a large log, and we ship no statement about it. Measure, then say so in the README. See below. |
+| ACK correlation view | P2 | Send and receive show individual ACKs; nothing pairs an ACK back to the message it answers, filters by ACK code, or colours a NAK. See below. |
+| Bulk compare two message streams | P2 | Field-level diff statistics across two files rather than two messages. The corpus-scale sibling of two-provider diff. See below. |
+| Export subset / merge / report | P2 | Save a selection of messages to a new file, merge files, print a report. No export path exists today. |
+| Bundled sample messages | P2 | A handful of synthetic starter messages in the config dir. Trivial, and it is the first thing a new user has to go find elsewhere. |
 
 **Closed as already done** (this doc had drifted from the code): L9 `.hl7` activation
 (`currentPathHasHl7Ext`), L11 tree-nav off-by-one, and retiring the fixed-buffer
@@ -337,6 +344,145 @@ once the picker supports multi-select.
 
 ---
 
+## Proposed features (2026-08-21 planning pass -- competitive assessment)
+
+Prompted by a claim that a paid tool was the right answer. Feature inventories of
+**HL7Spy** (Inner Harbour Software) and **HL7 Soup / Integration Soup** were read off the
+vendors' own pages and compared against what PipeHat ships. This section records what that
+comparison actually found, and the order the remaining work should be done in.
+
+**The three tools are not the same category, and the ranking below depends on saying so.**
+HL7Spy is a corpus analytics tool: it loads 100,000 messages in under two seconds, customers
+run corpora of tens of millions, and its centre of gravity is a SQL-style query language over
+a message collection. HL7 Soup is an interface engine with an editor attached: workflow
+designer, receivers, dashboards, database and cloud connectors, format conversion. PipeHat is
+neither. It is the message in front of you, in the editor you already have, for free, with an
+install that is copying one DLL.
+
+That framing is not a defence. It decides which gaps are real. A gap that is really "we are
+not an integration engine" is not on this list; a gap that a working interface engineer hits
+on a Tuesday afternoon is.
+
+### What the comparison confirmed we are ahead on
+
+Recorded because these are easy to give away by accident while chasing a feature list.
+
+- **The scrubber's failure model.** HL7Spy masks PHI at the display layer; HL7 Soup anonymises
+  in its web tier. Neither advertises anything about what happens when the de-identifier's own
+  coverage is wrong. PipeHat is fail-closed, and the anonymize coverage check derives segments
+  independently of the parser specifically so a parser gap surfaces as a warning rather than a
+  silent skip. That design came out of C6 and it is the strongest safety claim on the product.
+  **Do not let any item below weaken it.**
+- **The provider contract.** HL7Spy's answer to custom transformation is C# inside HL7Spy;
+  HL7 Soup's is its own designer. PipeHat's is stdin in, stdout out, exit code decides -- so
+  IRIS, Mirth, XSLT and anything else with a command line are all just lines in a config file.
+  This is why in-tool scripting stays declined below.
+- **Per-message delimiter scope.** Neither vendor claims it. A mixed-vendor log where message
+  200 declares different encoding characters is a correctness problem, not a convenience one.
+- **Replay's MSH-10/MSH-7 refresh.** HL7Spy sends over MLLP. Handling the receiver-deduplicates
+  trap explicitly -- a replay that reports success while delivering nothing -- is ours.
+- **Network defaults.** Off by default, loopback-only bind, per-session cleartext confirmation,
+  inbound messages in memory unless explicitly opted in, and to `LOCALAPPDATA` rather than the
+  roaming profile when they are. Stricter than either.
+- **A deliberately misbehaving receiver.** Configurable listener ACK/NAK (P1, above) is not a
+  catch-up item. Neither vendor sells a receiver you can make return AE, return AR, stall, or
+  never answer. Lead with it.
+
+### The ranked list
+
+Ordered by how often a working interface engineer hits the gap, not by how large the feature is.
+
+**1. Search / filter / query -- P0.** The one that matters. PipeHat cannot find a message.
+There is no field-value search, no filter, no query; this was verified by reading the source,
+not assumed. HL7Spy answers it with a SQL-style query language over the collection, HL7 Soup
+answers it with a real-time filter over the message list that also highlights every occurrence
+in the document. Two different products arrived at the same requirement, which is the tell.
+Minimum useful version is smaller than either: a field-value predicate evaluated across the
+messages in the buffer, a results list, and jump-to-message. `MessageIndex` already supplies
+the per-message iteration and per-message delimiters, so the machinery exists. Ship this before
+anything else on this page.
+
+**2. TLS / MLLP-S -- P0/P1 (already listed above).** HL7 Soup shipped TLS with certificate
+authentication in v3.7. This is the only axis where a paid tool is genuinely ahead of us on
+safety rather than on scale, and it is the item most likely to be quoted back at us. The design
+and the certificate-validation trap are already written up above; nothing in this assessment
+changes that reasoning, it only raises the urgency. stunnel stays the honest interim answer.
+
+**3. Non-destructive PHI display mask -- P1 (new).** Today the only way to hide PHI is Scrub,
+which rewrites the buffer and empties the undo history on purpose. That is correct for producing
+a shareable file and wrong for every other case: screen shares, screenshots for a ticket, a
+colleague standing behind you. HL7Spy has this as a toolbar toggle with configurable
+mask/do-not-mask/free-text field sets. Implement as a Scintilla indicator or styling overlay
+that never writes to the document -- **it must be visibly distinct from Scrub**, because a user
+who confuses a display mask for a de-identified file has been handed a leak by the UI. Smallest
+item on this page relative to its payoff.
+
+**4. Field population profiler -- P1 (already listed above).** HL7Spy's most-demonstrated
+feature and the interface-discovery question on every new integration. Unchanged in scope;
+this assessment only confirms the priority. Note that `hl7-bench` has explicitly declined to
+build this so the toolchain does not end up with two profilers that disagree -- it belongs here.
+
+**5. Data-driven tables + importable schemas -- P1 (already listed above, scope grows).**
+HL7 Soup imports custom and third-party schemas, including UK ITK for the NHS. That is the same
+build as generating our tables from HAPI/nHapi metadata rather than hand-curating them: once
+the tables are data rather than C++, a site's own schema is a file the user supplies. Two gaps,
+one piece of work, and it closes the C6 bug class by construction.
+
+**6. Message generator + template library -- P1 (already listed above).** HL7 Soup has templates
+with a binding tree. Unchanged in scope.
+
+**7. Configurable listener ACK/NAK -- P1 (already listed above).** See the differentiator note.
+
+**8. Document the scale ceiling -- P1 (new).** We make no claim about how large a file PipeHat
+handles, and we do not know the answer. HL7Spy publishes numbers (100,000 messages in under two
+seconds; 100MB+ files) and will win any comparison fought on that ground, because Notepad++'s
+buffer is a ceiling we do not control and are not going to raise. The honest move is to measure
+where the wall is, fix anything that turns out to be ours rather than the host's, and put a
+sentence in the README. An unstated limit gets discovered by a user in the middle of an incident.
+
+**9. Clinical summary / interpretation panel -- P2 (already listed above).** HL7 Soup's headline
+editor feature and already scoped here by that name.
+
+**10. ACK correlation view -- P2 (new).** HL7 Soup keeps a separate colour-coded ACK list you can
+filter by acknowledgement type. We show `MSA-1` on send and open inbound messages as tabs, and
+nothing joins the two. On a replay of several hundred messages the aggregate counts are the
+report; the missing piece is *which* message got the AE. Natural companion to Replay and to
+configurable ACK/NAK, and it shares the message-list surface that search (item 1) has to build
+anyway -- sequence it after search for that reason.
+
+**11. Bulk compare two message streams -- P2 (new).** HL7Spy sells this at engine migrations:
+diff two large streams and report which messages and which fields differ, with statistics by
+message type and field. PipeHat compares exactly two messages in two views. This is the
+corpus-scale sibling of **two-provider diff**, which is already the strongest item on the
+provider axis above, and the two share a comparison core. Build two-provider diff first: it is
+smaller, it answers the same migration question one message at a time, and it proves the
+comparison logic before scale is added on top.
+
+**12. Encoding doctor + hex view -- P2 (already listed above, scope grows).** HL7Spy ships a hex
+editor for hunting invalid bytes and does automatic character-encoding detection including
+multi-byte. Fold both into the existing encoding-doctor item rather than tracking them apart.
+
+**13. Export subset / merge / report -- P2 (new).** Save a selection to a new file, merge files,
+generate a report. No export path exists today beyond Notepad++'s own Save As.
+
+**14. Bundled sample messages -- P2 (new).** Both vendors ship them. Trivial, and it removes the
+first thing a new user has to go find somewhere else. Pairs with the template library.
+
+### Declined on this axis
+
+Consistent with the boundaries below; recorded here so the competitive framing does not reopen them.
+
+- **Format conversion (FHIR / JSON / XML / CSV), database and SFTP sources, workflow engine,
+  cloud connectors, DICOM.** These are what make HL7 Soup an interface engine and HL7Spy a data
+  platform. Chasing them turns a viewer into an engine and forfeits the one-DLL install, which
+  is the actual moat.
+- **In-tool scripting (C# or otherwise).** HL7Spy's custom-code feature is genuinely powerful and
+  the provider contract is the better answer to the same need: it does not tie the user to one
+  language, and it keeps executable code outside the plugin. See the provider-axis section above.
+- **A browser version.** Different product.
+
+---
+
 ## Scope boundaries -- considered and declined
 
 Recorded so they are not re-litigated. Revisit only with a specific reason.
@@ -592,3 +738,33 @@ Protocol (MLLP) framing (`<VT>` 0x0B … message … `<FS>` 0x1C `<CR>` 0x0D):
 - **v1.2 "Fluent"** -- trigger-event decoding, HL7 version awareness, escape decoding. The daily-driver upgrade.
 - **v1.3 "Troubleshooter"** -- message compare/diff + validation/malform detection. The interface-engineer power tools.
 - **v1.4 "Polish"** -- pretty-print, folding, copy-path, incremental lexing (M7), data-driven tables.
+
+---
+
+## Field requests
+
+Requests from named users, logged with attribution so the source survives. Not yet prioritised
+into the table above; triage on the next roadmap pass.
+
+| Date | Requester | Request | Maps to |
+|------|-----------|---------|---------|
+| 2026-08-21 | Vibinchander Venkatasubramanian (Integration Engineer, HL7v2/FHIR/CCDA/API), via LinkedIn | Sub-tree view for the repetition separator in the tree pane, rendered the way `hl7inspector.com` does it. Already a PipeHat user. | Adjacent to "Component/subcomponent tree depth" (P2), but distinct. That item is about depth below the field; this is about repeated occurrences of a field. Cheaper than component depth and requested by an actual user, which is an argument for doing it first. |
+
+### Competitive set, confirmed externally 2026-08-21
+
+The LinkedIn thread on the v2.0.0 announcement produced an unprompted tool comparison from
+practising interface engineers. Recording it because it validates priorities set before the post:
+
+- **HL7Spy** (paid) named by a healthcare integration consultant as the best v2 editor he has used,
+  worth the price, hundreds of hours saved. Already the benchmark cited under non-destructive PHI
+  masking (P1).
+- **HL7Soup** (paid) named as a good utility.
+- **A Visual Studio HL7 plugin** (free) named as decent, not as good as HL7Spy.
+
+Consequence for positioning: "field aware HL7 editor" is not a differentiator, three named tools
+already are one. The defensible claim is the intersection: inside Notepad++, installable without
+admin rights on a locked-down workstation, free, and maintained. Every tool above fails at least
+one.
+
+This strengthens the **Search / filter / query** P0. An independent practitioner paying for HL7Spy
+is the market pricing exactly the gap that item describes.

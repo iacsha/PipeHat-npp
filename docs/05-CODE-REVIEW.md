@@ -253,6 +253,67 @@ narrative** (currently scrubbed unconditionally, which may over-scrub numeric re
 Recommend deriving the map from a maintained reference (HAPI/nHapi metadata) rather than
 hand curation.
 
+### C7 -- `isPHI` fails **open** on anything the map does not list (critical class, belongs with C3/C4/C6)
+
+Found 2026-08-17 while de-identifying a real Meditech ADT^A01 for an athena interface build.
+Severity is C-class, not M-class: this is silent PHI retention, not a coverage nicety. It is
+filed after M8 only because M8 is the section it extends.
+
+`PHIScrubber::isPHI` linear-searches `m_fields` and **returns `false` when it finds nothing**
+(`PHIScrubber.cpp:11-16`). Absent from the map therefore means "not PHI", so an unrecognized
+segment or an unmapped field is passed through untouched. `CLAUDE.md` states the opposite as an
+invariant: *"The scrubber must fail closed."* It does not. The default is inverted at the lookup.
+
+Concrete misses on that one real message, all confirmed against `initFieldMap`:
+
+| What survived | Why |
+|---|---|
+| `STF-3` operator username | **`STF` is absent from the map entirely.** |
+| `ZP1` provider names/IDs plus two phone numbers | **Only `ZAL` is mapped.** The message carried `ZAD ZP1 ZF1 ZR1 ZPD ZQRY`. |
+| `ZQRY-16` patient MRN | Same. The MRN leaks *after* `PID` is scrubbed, which also defeats the referential integrity M6 was added to provide. |
+| `ZF1-2` internal build/session string | Same. Free text in an unmapped segment. |
+| `PV1-3` point of care ^ room ^ bed | `PV1-3` is not mapped, nor are `PV1-6`, `PV1-11`, `PV1-39`, `PV1-42`, `PV1-43`. Unit and room identify the site. |
+
+**The coverage check cannot catch this, and that is the actual defect.** The anonymize-mode check
+verifies that every field *the map calls PHI* was replaced. It cannot verify the map is complete,
+so it audits the wrong property. This is C6's lesson recurring with a different shared dependency:
+in C6 the net and the scrubber shared `extractSegmentID`; here they share **the map**. A message
+whose Z-segments are full of identifiers passes the check clean, with the same reassuring
+"no residual identifier patterns" wording quoted in C6.
+
+Custom segments are not an edge case. Every production hospital feed has them, and their contents
+are site-specific by definition, so no amount of hand curation reaches them. A bigger table is a
+patch, not a fix.
+
+**Fix, in dependency order:**
+
+1. **Unknown-segment policy (makes it safe).** A segment ID that `SegmentDB` does not know gets
+   every field redacted by default, under a new `[UNKNOWN]` label so the user can see what was
+   blanket-redacted and why. Opt-out per segment, never opt-in.
+2. **Independent content scan over the *output* (makes the gap visible).** Regex for SSN shape,
+   9 and 10 digit runs, email, phone shapes, and long digit runs. It must not consult
+   `m_fields` **or** `SegmentDB` at all, or it inherits the blindness it exists to detect.
+   Same rule as the C6 fix.
+3. **Add the known-missing entries:** `STF`, the `PV1` location fields above, and `ROL` beyond
+   field 4.
+
+**Two smaller defects found in the same read:**
+
+- **`fakeName()` returns the components reversed** (`PHIScrubber.cpp:78-81`). It builds
+  `pickFake(kFakeFirstNames) ^ pickFake(kFakeLastNames)`, but XPN component 1 is the *family*
+  name. Every scrubbed name comes out given-then-family, so scrubbed output looks wrong to a
+  reader and would break any downstream name-order test.
+- **`generateFake` replaces the whole field, destroying repeats and structural components.**
+  `PV1-7` arriving as `MNEMONIC^LAST^FIRST^...^MT~1234567890^LAST^FIRST^...^NPI` collapses to a
+  single `A^B`. The identifier-type components and the two-repeat shape are exactly what a
+  mapping exercise needs to see, so scrubbing makes the message useless as design input, which
+  pushes users toward hand-scrubbing and its own mistakes. Component-aware scrubbing (replace
+  XCN components 1 through 6, keep 13, keep the repeat structure) would fix both the fidelity
+  loss and the reversed-name bug at once.
+- Minor, latent: `g_fakeSeed` is a mutable file-scope global driven by `fakeRandom()`, so
+  `generateFake` is declared `const` while mutating shared state. Harmless while scrub is
+  UI-thread only; a real bug the moment it is not.
+
 ---
 
 ## Low Findings
@@ -287,5 +348,8 @@ hand curation.
 1. C2 (one-word `SCI_SETSTYLING` fix) -- unblocks the highlighter.
 2. C1/H5 (line-length-driven buffered reads) -- closes the overflow across all files.
 3. C3/C4 (tokenizer + post-scrub residual scan) -- makes PHI removal trustworthy.
-4. M6/M7 -- anonymization quality and editor responsiveness.
-5. M8/L9/L10/L11 -- coverage, honesty, hardening, polish.
+4. C7 -- invert the `isPHI` default and add a map-independent residual scan. Same class as
+   C3/C4/C6 and the last of that family; until it lands, any message with custom segments is
+   scrubbed on a best-effort basis while reporting a clean result.
+5. M6/M7 -- anonymization quality and editor responsiveness.
+6. M8/L9/L10/L11 -- coverage, honesty, hardening, polish.
