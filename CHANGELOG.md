@@ -4,7 +4,7 @@ All notable changes to PipeHat. Versions follow [semantic versioning](https://se
 
 ---
 
-## [Unreleased]
+## [2.3.0] -- 2026-08-25
 
 ### Added
 
@@ -355,6 +355,8 @@ Initial release, after an independent code review and hardening pass.
 
 - Build hardening: `/guard:cf /sdl /GS /DYNAMICBASE /NXCOMPAT`.
 
+[2.3.0]: https://github.com/iacsha/PipeHat-npp/releases/tag/v2.3.0
+[2.2.0]: https://github.com/iacsha/PipeHat-npp/releases/tag/v2.2.0
 [2.1.0]: https://github.com/iacsha/PipeHat-npp/releases/tag/v2.1.0
 [2.0.0]: https://github.com/iacsha/PipeHat-npp/releases/tag/v2.0.0
 [1.2.0]: https://github.com/iacsha/PipeHat-npp/releases/tag/v1.2.0
