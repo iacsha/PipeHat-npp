@@ -21,7 +21,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Locate MSVC
         shell: pwsh
@@ -84,7 +84,7 @@ jobs:
           Copy-Item build\Release\PipeHat.dll dist\PipeHat\
           Copy-Item README.md, CHANGELOG.md, LICENSE dist\
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: PipeHat-x64-${{ github.sha }}
           path: dist/
