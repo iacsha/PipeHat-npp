@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <string>
+#include <algorithm>
 #include <vector>
 #include <cstring>
 #include <cwctype>
@@ -19,6 +20,7 @@
 #include "PHIScrubber.h"
 #include "SciUtils.h"
 #include "ConformanceProfile.h"
+#include "EndpointProfile.h"
 #include "Validator.h"
 #include "MessageIndex.h"
 #include "MessageRefresh.h"
@@ -65,7 +67,11 @@ static SegmentDB g_segmentDB;
 static MessageTreeView g_treeView;
 static PHIScrubber g_phiScrubber;
 static ConformanceProfile g_profile;
-static std::wstring g_activeProfile;   // active conformance profile name ("" = default)
+static std::wstring g_activeProfile;   // active endpoint profile slug ("" = default)
+
+// The active profile's [Profile] facets and [Connection], fully resolved through
+// any inheritance chain. g_profile above holds the same file's rules.
+static endpoint::Profile g_endpoint;
 
 // ── MLLP networking (off by default; see MllpConfig) ──
 static MllpConfig        g_mllp;
@@ -74,7 +80,37 @@ static HWND              g_hMllpWnd = nullptr;      // hidden UI-thread marshali
 // Defined next to createMllpWindow(); declared here because the async commands
 // above it must never read g_hMllpWnd directly. See the comment at the definition.
 static HWND              marshalWindow();
-static bool              g_mllpCleartextAcked = false; // PHI cleartext warning shown this session
+// Which profiles have had the cleartext-PHI warning acknowledged this session.
+//
+// This is a set and not a single bool because profiles made switching cheap. A
+// warning that re-fires on every switch gets clicked through without being read,
+// which costs more than it buys; one that is acknowledged once for the whole
+// session stops describing the endpoint you are actually pointed at. Per profile
+// per session is the version that still means something: moving from a loopback
+// profile to a shared QA server asks again, and flipping back to one you already
+// acknowledged does not.
+// The GLOBAL half of the non-loopback opt-in, from PipeHat.ini.
+//
+// A profile is a file. Files get emailed, dropped into a config folder, and
+// copied off a share, so a profile alone must not be able to expose a PHI
+// receiver on the network. The effective permission is this AND the profile's
+// own allowNonLoopback: the user opts in once, deliberately, in the ini, and
+// each profile still says whether IT wants a real interface. Either one false
+// means loopback.
+static bool g_mllpAllowNonLoopbackGlobal = false;
+
+// Security-relevant fingerprint of where we are currently pointed. The
+// cleartext-PHI acknowledgement is keyed on this rather than on the profile name
+// so that editing the host mid-session, or two profiles sharing a label, cannot
+// carry an acknowledgement onto an endpoint it was never granted for.
+static std::wstring endpointFingerprint() {
+    return g_mllp.host + L"|" + std::to_wstring(g_mllp.sendPort) + L"|" +
+           std::to_wstring(g_mllp.listenPort) + L"|" + g_mllp.effectiveBindAddr() + L"|" +
+           (g_mllp.allowNonLoopback ? L"1" : L"0") + L"|" +
+           endpoint::environmentName(g_endpoint.meta.environment);
+}
+
+static std::vector<std::wstring> g_mllpCleartextAcked;
 static int               g_mllpListenerItemIdx = -1;   // g_funcItems index of the listener toggle
 
 // Forward declarations for MLLP helpers used before their definitions.
@@ -131,7 +167,7 @@ static int g_healCount = 0;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[26];
+static FuncItem g_funcItems[27];   // exactly sized -- bump when adding a menu item
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -144,6 +180,7 @@ static ShortcutKey g_skEnable;
 static ShortcutKey g_skValidate;
 static ShortcutKey g_skCompare;
 static ShortcutKey g_skSettings;
+static ShortcutKey g_skSwitchProfile;
 static ShortcutKey g_skMllpSend;
 static ShortcutKey g_skMllpReplay;
 static ShortcutKey g_skMllpListen;
@@ -736,6 +773,84 @@ static std::wstring activeProfilePath() {
                                    : dir + L"\\PipeHat." + g_activeProfile + L".profile";
 }
 
+// Path of a profile by slug. "" is the default PipeHat.profile.
+static std::wstring profilePathForSlug(const std::wstring& slug) {
+    std::wstring dir = configDirW();
+    if (dir.empty()) return std::wstring();
+    return slug.empty() ? dir + L"\\PipeHat.profile"
+                        : dir + L"\\PipeHat." + slug + L".profile";
+}
+
+// Read a profile file by slug. The reader endpoint::resolve walks the
+// inheritance chain with; every Win32 file call for profiles goes through here.
+static bool readProfileFile(const std::wstring& slug, std::wstring& outText) {
+    std::wstring path = profilePathForSlug(slug);
+    if (path.empty()) return false;
+    std::ifstream in(path.c_str(), std::ios::binary);
+    if (!in) return false;
+    std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    outText = utf8ToW(bytes);
+    return true;
+}
+
+// One-time move of the old global [MLLP] connection settings in PipeHat.ini into
+// the active profile.
+//
+// Idempotent by construction rather than by a flag: it only writes a profile
+// that has no [Connection] section, and writing one gives it exactly that. A
+// migration guarded by an ini flag instead would re-run and overwrite a
+// hand-edited profile the first time the flag was lost.
+static void migrateGlobalConnectionIntoProfile() {
+    // ONCE PER SESSION, AND ONLY AT STARTUP. loadProfile() is also called on every
+    // profile switch, and on a switch g_mllp holds the OUTGOING profile's
+    // connection -- so without this gate, selecting a profile that has no
+    // [Connection] would write the previous endpoint's host and ports into it
+    // permanently. Select "dev" and you would still be pointed at production,
+    // wearing a DEV label, which also costs the PROD confirmation because
+    // requiresExtraConfirm reads the new profile's environment.
+    //
+    // A gate rather than moving the call: the startup load is the one where
+    // g_mllp still holds what loadMllpConfig read from the old global [MLLP]
+    // block, and that is the whole upgrade path for a user who had
+    // AllowNonLoopback=1 and a real BindAddr. Deleting the call drops them to
+    // loopback silently on upgrade.
+    static bool s_migrationAttempted = false;
+    if (s_migrationAttempted) return;
+    s_migrationAttempted = true;
+
+    if (g_endpoint.hasConnection) return;
+    std::wstring path = profilePathForSlug(g_activeProfile);
+    if (path.empty()) return;
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+
+    // Re-read and parse THIS profile's own file rather than reusing g_endpoint.
+    // g_endpoint is the RESOLVED profile: its rulesText already has the parent's
+    // rules folded in and its `inherits` has been cleared. Serializing that back
+    // over a child would copy the parent's rules into the child and silently
+    // break the inheritance link -- the exact drift this feature exists to stop.
+    std::wstring ownText;
+    if (!readProfileFile(g_activeProfile, ownText)) return;
+    endpoint::Profile p = endpoint::parse(ownText);
+    if (p.hasConnection) return;        // re-checked against the file, not the merge
+
+    p.conn.host             = g_mllp.host;
+    p.conn.sendPort         = g_mllp.sendPort;
+    p.conn.listenPort       = g_mllp.listenPort;
+    p.conn.bindAddr         = g_mllp.bindAddr;
+    p.conn.allowNonLoopback = g_mllp.allowNonLoopback;
+    p.hasConnection = true;
+
+    std::string bytes = wToUtf8(endpoint::serialize(p));
+    std::ofstream out(path.c_str(), std::ios::binary | std::ios::trunc);
+    if (!out) return;
+    out.write(bytes.data(), (std::streamsize)bytes.size());
+    // Re-resolve rather than assigning p: p is this file alone, without its
+    // parent's rules.
+    g_endpoint = endpoint::resolve(g_activeProfile, readProfileFile);
+    logEvent(L"Profile", L"Migrated global MLLP connection into profile '" +
+                         (g_activeProfile.empty() ? std::wstring(L"(default)") : g_activeProfile) + L"'");
+}
+
 static void loadProfile() {
     std::wstring path = activeProfilePath();
     if (path.empty()) return;
@@ -746,10 +861,37 @@ static void loadProfile() {
         if (out) out.write(bytes.data(), (std::streamsize)bytes.size());
     }
 
-    std::ifstream in(path.c_str(), std::ios::binary);
-    if (!in) return;
-    std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    g_profile.parse(utf8ToW(bytes));
+    // Resolve the whole inheritance chain, then hand only the rules region to
+    // ConformanceProfile. A file with no sections at all comes back as pure
+    // rules, which is what every profile written before this change looks like.
+    g_endpoint = endpoint::resolve(g_activeProfile, readProfileFile);
+    g_profile.parse(g_endpoint.rulesText);
+
+    for (const auto& w : g_endpoint.warnings)
+        logEvent(L"Profile", w);
+
+    migrateGlobalConnectionIntoProfile();
+
+    // The profile is authoritative for WHERE this endpoint is. It is never
+    // authoritative for WHETHER networking runs at all: enabled and saveReceived
+    // stay exactly as PipeHat.ini left them.
+    if (g_endpoint.hasConnection) {
+        g_mllp.host             = g_endpoint.conn.host;
+        g_mllp.sendPort         = g_endpoint.conn.sendPort;
+        g_mllp.listenPort       = g_endpoint.conn.listenPort;
+        g_mllp.bindAddr         = g_endpoint.conn.bindAddr;
+        // AND, never OR: a dropped-in profile cannot expose a receiver by itself.
+        g_mllp.allowNonLoopback =
+            g_mllpAllowNonLoopbackGlobal && g_endpoint.conn.allowNonLoopback;
+        if (g_endpoint.conn.allowNonLoopback && !g_mllpAllowNonLoopbackGlobal)
+            logEvent(L"Profile", L"Profile asks for a non-loopback bind but the global "
+                                 L"opt-in in PipeHat.ini is off -- binding loopback");
+    }
+}
+
+// The name shown in the picker and in dialog titles for the active profile.
+static std::wstring activeProfileLabel() {
+    return endpoint::displayName(g_endpoint.meta, g_activeProfile);
 }
 
 // ── External transform providers ──────────────────────────────────────────
@@ -929,6 +1071,125 @@ static void cmdTransformAgain() {
     runProvider(*p);
 }
 
+// ── endpoint profile switching ────────────────────────────────────────────
+//
+// Switching profiles is the frequent action once a profile carries its own
+// connection, so it gets its own command rather than a trip through Settings.
+
+// Every PipeHat[.name].profile in the config folder. "" (the default profile)
+// is always first.
+static std::vector<std::wstring> enumerateProfileSlugs() {
+    std::vector<std::wstring> out;
+    out.push_back(std::wstring());
+    std::wstring dir = configDirW();
+    if (dir.empty()) return out;
+
+    WIN32_FIND_DATAW fd;
+    std::wstring pat = dir + L"\\PipeHat.*.profile";
+    HANDLE h = FindFirstFileW(pat.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return out;
+    do {
+        std::wstring fn = fd.cFileName;
+        // "PipeHat." + slug + ".profile"
+        const size_t pre = 8, suf = 8;
+        if (fn.size() <= pre + suf) continue;
+        std::wstring slug = fn.substr(pre, fn.size() - pre - suf);
+        if (slug.empty()) continue;
+        bool dup = false;
+        for (const auto& x : out) if (x == slug) { dup = true; break; }
+        if (!dup) out.push_back(slug);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return out;
+}
+
+// SECURITY: a profile switch must never open a socket as a side effect.
+//
+// The new profile can name a different listener port, a different bind address,
+// and its own allowNonLoopback. Carrying a running listener across that change
+// would silently move where PipeHat is listening, so the listener is stopped and
+// re-arming it stays an explicit toggle the user performs.
+static void switchActiveProfile(const std::wstring& slug) {
+    if (slug == g_activeProfile) return;
+
+    const bool wasRunning = g_listener.running();
+    if (wasRunning) {
+        g_listener.stop();
+        updateListenerCheck();
+    }
+
+    g_activeProfile = slug;
+    loadProfile();          // resolves inheritance and applies the new connection
+    saveMllpConfig();       // persists the newly active profile name
+
+    logEvent(L"Profile", L"Switched to '" + activeProfileLabel() + L"'" +
+                         (wasRunning ? L" (listener stopped)" : L""));
+
+    std::wstring msg = L"Active profile: " + activeProfileLabel() + L"\r\n\r\n" +
+        L"Send to: " + g_mllp.host + L":" + std::to_wstring(g_mllp.sendPort) + L"\r\n" +
+        L"Listener port: " + std::to_wstring(g_mllp.listenPort) + L"\r\n" +
+        L"Listener binds: " + g_mllp.effectiveBindAddr();
+    if (wasRunning)
+        msg += L"\r\n\r\nThe MLLP listener was stopped because the profile changed. "
+               L"Turn it back on with Toggle MLLP Listener when you are ready.";
+    MessageBoxW(g_nppData._nppHandle, msg.c_str(), L"PipeHat \x2014 Profile",
+                MB_OK | MB_ICONINFORMATION);
+}
+
+// Popup picker, same shape as the transform-provider one: no .rc template and it
+// appears where the mouse already is. Entries are grouped by application, then
+// engine, then message type, and within a group they run Local, DEV, QA, PROD so
+// a promotion path reads top to bottom.
+static void cmdSwitchProfile() {
+    struct Entry { std::wstring slug, label, app, engine, msgType; int rank; };
+    std::vector<Entry> entries;
+
+    for (const auto& slug : enumerateProfileSlugs()) {
+        // Resolved, not just parsed: a child that inherits its application and
+        // engine from a base profile would otherwise be listed under a blank
+        // group and labelled with only the half it restates.
+        endpoint::Profile p = endpoint::resolve(slug, readProfileFile);
+        Entry e;
+        e.slug    = slug;
+        e.label   = endpoint::displayName(p.meta, slug);
+        e.app     = p.meta.application;
+        e.engine  = p.meta.engine;
+        e.msgType = p.meta.messageType;
+        e.rank    = endpoint::environmentRank(p.meta.environment);
+        entries.push_back(e);
+    }
+    if (entries.size() <= 1) {
+        MessageBoxW(g_nppData._nppHandle,
+            L"Only one profile exists.\r\n\r\n"
+            L"Create another in Settings (Ctrl+Alt+Shift+P). A profile carries its "
+            L"own conformance rules and its own MLLP connection, so switching "
+            L"profiles repoints PipeHat at a different endpoint in one step.",
+            L"PipeHat \x2014 Switch Profile", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    std::stable_sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
+        if (a.app != b.app)         return a.app < b.app;
+        if (a.engine != b.engine)   return a.engine < b.engine;
+        if (a.msgType != b.msgType) return a.msgType < b.msgType;
+        return a.rank < b.rank;
+    });
+
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    for (size_t i = 0; i < entries.size(); i++) {
+        UINT flags = MF_STRING;
+        if (entries[i].slug == g_activeProfile) flags |= MF_CHECKED;
+        AppendMenuW(menu, flags, (UINT_PTR)(i + 1), entries[i].label.c_str());
+    }
+    POINT pt; GetCursorPos(&pt);
+    int pick = (int)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN,
+                                   pt.x, pt.y, 0, g_nppData._nppHandle, nullptr);
+    DestroyMenu(menu);
+    if (pick > 0 && pick <= (int)entries.size())
+        switchActiveProfile(entries[pick - 1].slug);
+}
+
 // Open the settings GUI (conformance-rule editor + MLLP + profiles). On save we
 // reload the active profile so Check Conformance reflects edits without a restart.
 static void cmdSettings() {
@@ -940,15 +1201,50 @@ static void cmdSettings() {
         return;
     }
 
+    const std::wstring before       = g_activeProfile;
+    const std::wstring beforeBind    = g_mllp.effectiveBindAddr();
+    const int          beforeListen  = g_mllp.listenPort;
     if (SettingsDialog::runModal((HINSTANCE)g_hModule, g_nppData._nppHandle, dir,
                                  g_activeProfile, g_mllp, std::wstring(), 0, &g_segmentDB)) {
+        // Changing the active profile inside Settings repoints the connection
+        // exactly as the Switch Profile command does, so it must stop a running
+        // listener for the same reason: the port and bind address just changed
+        // under it. The check is on the profile name, not on the port values --
+        // two profiles may legitimately share a port and still be different
+        // endpoints.
+        // The dialog edits the GLOBAL permission through cfg.allowNonLoopback.
+        // Capture it before loadProfile, which overwrites g_mllp.allowNonLoopback
+        // with the ANDed result of this and the profile's own flag.
+        g_mllpAllowNonLoopbackGlobal = g_mllp.allowNonLoopback;
+
+        const bool profileChanged = (g_activeProfile != before);
         loadProfile();
         saveMllpConfig();
+
+        // Compared AFTER loadProfile, so g_mllp holds the final ANDed values.
+        // The profile NAME is not enough on its own: editing the active
+        // profile's listener port in place, or clearing the global opt-in to
+        // pull a receiver back to loopback, moves the socket without renaming
+        // anything. Leaving the old socket up would make every dialog, the
+        // profile file and the ini say one thing while the open port says
+        // another -- and would make a security opt-in the user just switched
+        // off visibly do nothing.
+        const bool endpointMoved = profileChanged ||
+                                   g_mllp.listenPort != beforeListen ||
+                                   g_mllp.effectiveBindAddr() != beforeBind;
+        if (endpointMoved && g_listener.running()) {
+            g_listener.stop();
+            updateListenerCheck();
+            logEvent(L"Profile", L"Listener stopped -- the bind target changed in Settings");
+        }
         // If networking was switched off while the listener is up, stop it now.
         if (!g_mllp.enabled && g_listener.running()) {
             g_listener.stop();
             updateListenerCheck();
         }
+        if (profileChanged)
+            logEvent(L"Profile", L"Active profile changed in Settings to '" +
+                                 activeProfileLabel() + L"'");
     }
 }
 
@@ -971,7 +1267,9 @@ static void loadMllpConfig() {
     GetPrivateProfileStringW(L"MLLP", L"Host", L"127.0.0.1", buf, 256, ini.c_str()); g_mllp.host = buf;
     g_mllp.sendPort   = GetPrivateProfileIntW(L"MLLP", L"SendPort", 2575, ini.c_str());
     g_mllp.listenPort = GetPrivateProfileIntW(L"MLLP", L"ListenPort", 2575, ini.c_str());
-    g_mllp.allowNonLoopback = GetPrivateProfileIntW(L"MLLP", L"AllowNonLoopback", 0, ini.c_str()) != 0;
+    g_mllpAllowNonLoopbackGlobal =
+        GetPrivateProfileIntW(L"MLLP", L"AllowNonLoopback", 0, ini.c_str()) != 0;
+    g_mllp.allowNonLoopback = g_mllpAllowNonLoopbackGlobal;
     GetPrivateProfileStringW(L"MLLP", L"BindAddr", L"127.0.0.1", buf, 256, ini.c_str()); g_mllp.bindAddr = buf;
     g_mllp.saveReceived = GetPrivateProfileIntW(L"MLLP", L"SaveReceived", 0, ini.c_str()) != 0;
     GetPrivateProfileStringW(L"Conformance", L"ActiveProfile", L"", buf, 256, ini.c_str()); g_activeProfile = buf;
@@ -984,7 +1282,11 @@ static void saveMllpConfig() {
     WritePrivateProfileStringW(L"MLLP", L"Host", g_mllp.host.c_str(), ini.c_str());
     WritePrivateProfileStringW(L"MLLP", L"SendPort", std::to_wstring(g_mllp.sendPort).c_str(), ini.c_str());
     WritePrivateProfileStringW(L"MLLP", L"ListenPort", std::to_wstring(g_mllp.listenPort).c_str(), ini.c_str());
-    WritePrivateProfileStringW(L"MLLP", L"AllowNonLoopback", g_mllp.allowNonLoopback ? L"1" : L"0", ini.c_str());
+    // The global opt-in is written from its own variable. Writing g_mllp's
+    // already-ANDed value would let one session with a loopback profile active
+    // silently clear the user's global permission.
+    WritePrivateProfileStringW(L"MLLP", L"AllowNonLoopback",
+                               g_mllpAllowNonLoopbackGlobal ? L"1" : L"0", ini.c_str());
     WritePrivateProfileStringW(L"MLLP", L"BindAddr", g_mllp.bindAddr.c_str(), ini.c_str());
     WritePrivateProfileStringW(L"MLLP", L"SaveReceived", g_mllp.saveReceived ? L"1" : L"0", ini.c_str());
     WritePrivateProfileStringW(L"Conformance", L"ActiveProfile", g_activeProfile.c_str(), ini.c_str());
@@ -999,10 +1301,34 @@ static std::string genControlId() {
     return b;
 }
 
-// One-time-per-session confirmation that PHI will cross the wire in cleartext.
+// Confirmation that PHI will cross the wire in cleartext: once per profile, per
+// session. See the comment on g_mllpCleartextAcked for why it is keyed that way.
 static bool confirmCleartextOnce() {
-    if (g_mllpCleartextAcked) return true;
+    const std::wstring fp = endpointFingerprint();
+    for (const auto& s : g_mllpCleartextAcked)
+        if (s == fp) return true;
+
+    // SECURITY: the environment label can only ADD a confirmation here. There is
+    // no branch below that skips one because a profile calls itself Local, and
+    // there must never be one -- a mistyped label would then be a bypass. The
+    // real gate on where the listener binds stays MllpConfig::effectiveBindAddr.
+    if (endpoint::requiresExtraConfirm(g_endpoint.meta.environment)) {
+        std::wstring pm =
+            L"The active profile is marked PROD.\r\n\r\n" + activeProfileLabel() +
+            L"\r\n\r\nSend to / listen on a PRODUCTION endpoint?";
+        if (MessageBoxW(g_nppData._nppHandle, pm.c_str(),
+                        L"PipeHat MLLP \x2014 Production Endpoint",
+                        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 |
+                        MB_SETFOREGROUND | MB_TOPMOST) != IDYES)
+            return false;
+    }
+
     std::wstring msg =
+        L"Profile: " + activeProfileLabel() + L"\r\n" +
+        L"Send to: " + g_mllp.host + L":" + std::to_wstring(g_mllp.sendPort) + L"\r\n" +
+        L"Listener binds: " + g_mllp.effectiveBindAddr() + L":" +
+        std::to_wstring(g_mllp.listenPort) + L"\r\n\r\n";
+    msg +=
         L"MLLP sends and receives HL7 in CLEARTEXT over TCP.\r\n\r\n"
         L"Protected Health Information (PHI) will cross the network unencrypted. "
         L"Only use this over loopback or a trusted network.";
@@ -1014,7 +1340,7 @@ static bool confirmCleartextOnce() {
     int r = MessageBoxW(g_nppData._nppHandle, msg.c_str(),
         L"PipeHat MLLP \x2014 Cleartext Warning",
         MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST);
-    if (r == IDYES) { g_mllpCleartextAcked = true; return true; }
+    if (r == IDYES) { g_mllpCleartextAcked.push_back(fp); return true; }
     return false;
 }
 
@@ -2630,6 +2956,7 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skValidate   = { true, true, true, 'V' };             // Ctrl+Alt+Shift+V  -- validate / malform check
     g_skCompare    = { true, true, true, 'D' };             // Ctrl+Alt+Shift+D  -- compare the two views
     g_skSettings   = { true, true, true, 'P' };             // Ctrl+Alt+Shift+P  -- settings
+    g_skSwitchProfile = { true, true, true, 'B' };        // Ctrl+Alt+Shift+B  -- switch endpoint profile
     g_skMllpSend   = { true, true, true, 'M' };             // Ctrl+Alt+Shift+M  -- MLLP send message
     g_skMllpReplay = { true, true, true, 'Y' };             // Ctrl+Alt+Shift+Y  -- replay all messages
     g_skMllpListen = { true, true, true, 'L' };             // Ctrl+Alt+Shift+L  -- MLLP listener toggle
@@ -2739,6 +3066,13 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_funcItems[g_nbFuncItems]._pShKey = &g_skSettings;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Switch Endpoint Profile\x2026");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdSwitchProfile;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skSwitchProfile;
     g_nbFuncItems++;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Add Conformance Rule from Field");

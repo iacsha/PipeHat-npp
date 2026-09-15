@@ -1,6 +1,7 @@
 #include "SettingsDialog.h"
 #include "resource.h"
 #include "ConformanceProfile.h"   // reuse defaultFileText() as the saved header
+#include "EndpointProfile.h"      // [Profile] facets + [Connection] in the same file
 #include "SegmentDB.h"            // populate the rule editor's dropdowns
 #include <commctrl.h>
 #include <windowsx.h>
@@ -35,8 +36,26 @@ int               g_seedField = 0;
 const SegmentDB*  g_segDb = nullptr;   // populates the rule editor dropdowns (not owned)
 std::wstring      g_configDir;         // folder holding PipeHat[.name].profile files
 std::wstring*     g_activeProfilePtr = nullptr;  // in/out active profile name ("" = default)
-std::wstring      g_curDisplay;        // profile display name currently shown
+std::wstring      g_curDisplay;        // profile slug currently shown in the combo
 const wchar_t*    kDefaultDisplay = L"(default)";
+
+// The [Profile] facets and [Connection] of the profile currently in the dialog.
+// g_rules is the editable view of that same file's rules; the two are written
+// back together by saveRules().
+endpoint::Profile g_ep;
+
+// Set when the user actually edits the connection controls. Browsing the profile
+// dropdown calls readEndpoint + saveRules on every change, so without this a
+// profile you merely clicked past would be rewritten with a [Connection] it never
+// had. The values would be harmless loopback defaults, but silently rewriting a
+// file the user only looked at is its own bug.
+bool g_connDirty = false;
+
+// True while populateEndpoint is writing the controls. SetDlgItemTextW fires
+// EN_CHANGE exactly like a keystroke does, so without this every profile the
+// dialog merely displays would immediately look edited and g_connDirty would be
+// useless.
+bool g_populating = false;
 
 // ── small text helpers ──
 std::wstring utf8ToW(const std::string& s) {
@@ -72,10 +91,19 @@ Rule* findRule(const std::wstring& seg, int field) {
 // "SEG-FIELD.attr=value" grammar ConformanceProfile understands.
 void loadRules(const std::wstring& path) {
     g_rules.clear();
+    g_ep = endpoint::Profile();
+    g_connDirty = false;
     std::ifstream in(path.c_str(), std::ios::binary);
     if (!in) return;
     std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    std::wstring text = utf8ToW(bytes);
+
+    // The file may hold [Profile] and [Connection] sections alongside the rules.
+    // Split it first and walk only the rules region below, so a facet line like
+    // "application = Meditech" can never be mistaken for a malformed rule. A file
+    // written before endpoint profiles existed has no sections at all and its
+    // whole body comes back as rulesText, which is why old profiles still load.
+    g_ep = endpoint::parse(utf8ToW(bytes));
+    const std::wstring text = g_ep.rulesText;
 
     size_t start = 0;
     while (start <= text.size()) {
@@ -115,17 +143,23 @@ void loadRules(const std::wstring& path) {
 // hand-written rule lines are regenerated from g_rules (comments in the header
 // are preserved).
 bool saveRules(const std::wstring& path) {
-    std::wstring out = ConformanceProfile::defaultFileText();
-    out += L"\r\n";
+    std::wstring rules = ConformanceProfile::defaultFileText();
+    rules += L"\r\n";
     for (const auto& r : g_rules) {
         std::wstring key = r.seg + L"-" + std::to_wstring(r.field);
         if (r.hasMax)
-            out += key + L".max=" + std::to_wstring(r.maxLen) + L"\r\n";
+            rules += key + L".max=" + std::to_wstring(r.maxLen) + L"\r\n";
         if (r.hasValues && !trim(r.values).empty())
-            out += key + L".values=" + trim(r.values) + L"\r\n";
+            rules += key + L".values=" + trim(r.values) + L"\r\n";
         if (r.required)
-            out += key + L".required=true\r\n";
+            rules += key + L".required=true\r\n";
     }
+
+    // The facets and connection are written back with the rules. Regenerating
+    // only the rules here, as this function used to, would delete the [Profile]
+    // and [Connection] sections of every profile the user opened.
+    g_ep.rulesText = rules;
+    const std::wstring out = endpoint::serialize(g_ep);
     std::string bytes = wToUtf8(out);
     std::ofstream f(path.c_str(), std::ios::binary | std::ios::trunc);
     if (!f) return false;
@@ -207,32 +241,183 @@ void populateFieldCombo(HWND hDlg, const std::wstring& seg) {
     }
 }
 
-// ── MLLP section of the settings dialog ──
-void populateMllp(HWND hDlg) {
+// ── global MLLP switches (PipeHat.ini, NOT per profile) ──
+//
+// Only the two switches a profile must never be able to flip on its own live
+// here. Everything else about the connection belongs to the endpoint below.
+void populateGlobalMllp(HWND hDlg) {
     if (!g_cfg) return;
     setChecked(hDlg, IDC_MLLP_ENABLE, g_cfg->enabled);
-    SetDlgItemTextW(hDlg, IDC_MLLP_HOST, g_cfg->host.c_str());
-    SetDlgItemTextW(hDlg, IDC_MLLP_SENDPORT, std::to_wstring(g_cfg->sendPort).c_str());
-    SetDlgItemTextW(hDlg, IDC_MLLP_LISTENPORT, std::to_wstring(g_cfg->listenPort).c_str());
-    setChecked(hDlg, IDC_MLLP_ALLOWNONLOOP, g_cfg->allowNonLoopback);
-    SetDlgItemTextW(hDlg, IDC_MLLP_BINDADDR, g_cfg->bindAddr.c_str());
-    EnableWindow(GetDlgItem(hDlg, IDC_MLLP_BINDADDR), g_cfg->allowNonLoopback);
     setChecked(hDlg, IDC_MLLP_SAVERECV, g_cfg->saveReceived);
+    // cfg->allowNonLoopback carries the GLOBAL permission in and out of this
+    // dialog. The per-profile half lives in g_ep.conn and is edited in the
+    // endpoint section; a bind needs both.
+    setChecked(hDlg, IDC_MLLP_ALLOWGLOBAL, g_cfg->allowNonLoopback);
 }
 
-void readMllp(HWND hDlg) {
+void readGlobalMllp(HWND hDlg) {
     if (!g_cfg) return;
     g_cfg->enabled = isChecked(hDlg, IDC_MLLP_ENABLE);
-    g_cfg->host = getText(hDlg, IDC_MLLP_HOST);
-    if (g_cfg->host.empty()) g_cfg->host = L"127.0.0.1";
-    int sp = _wtoi(getText(hDlg, IDC_MLLP_SENDPORT).c_str());
-    if (sp > 0 && sp <= 65535) g_cfg->sendPort = sp;
-    int lp = _wtoi(getText(hDlg, IDC_MLLP_LISTENPORT).c_str());
-    if (lp > 0 && lp <= 65535) g_cfg->listenPort = lp;
-    g_cfg->allowNonLoopback = isChecked(hDlg, IDC_MLLP_ALLOWNONLOOP);
-    g_cfg->bindAddr = getText(hDlg, IDC_MLLP_BINDADDR);
-    if (g_cfg->bindAddr.empty()) g_cfg->bindAddr = L"127.0.0.1";
     g_cfg->saveReceived = isChecked(hDlg, IDC_MLLP_SAVERECV);
+    g_cfg->allowNonLoopback = isChecked(hDlg, IDC_MLLP_ALLOWGLOBAL);
+}
+
+// The bind address is only meaningful when BOTH halves of the opt-in are set.
+// Greying it otherwise is how the AND is made visible rather than discovered.
+void updateBindAddrEnabled(HWND hDlg) {
+    const bool both = isChecked(hDlg, IDC_MLLP_ALLOWNONLOOP) &&
+                      isChecked(hDlg, IDC_MLLP_ALLOWGLOBAL);
+    EnableWindow(GetDlgItem(hDlg, IDC_MLLP_BINDADDR), both);
+}
+
+// ── endpoint section: [Profile] facets + [Connection] of the active profile ──
+void populateEnvCombo(HWND hDlg) {
+    HWND c = GetDlgItem(hDlg, IDC_EP_ENVIRONMENT);
+    SendMessageW(c, CB_RESETCONTENT, 0, 0);
+    SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)L"(unspecified)");
+    SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)L"Local");
+    SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)L"DEV");
+    SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)L"QA");
+    SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)L"PROD");
+}
+
+std::vector<std::wstring> enumerateProfiles();
+std::wstring nameFromDisplay(const std::wstring& disp);
+
+// Parents offered for inheritance. The current profile is excluded so the most
+// obvious cycle, a profile inheriting from itself, cannot be created by a click.
+// Deeper cycles are still possible by hand-editing and are caught at load by
+// endpoint::resolve.
+void populateInheritsCombo(HWND hDlg, const std::wstring& currentSlug) {
+    HWND c = GetDlgItem(hDlg, IDC_EP_INHERITS);
+    SendMessageW(c, CB_RESETCONTENT, 0, 0);
+    SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)L"(none)");
+    for (const auto& p : enumerateProfiles()) {
+        if (p == kDefaultDisplay) continue;         // the default has no slug to name
+        if (p == currentSlug) continue;             // no self-inheritance
+        SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)p.c_str());
+    }
+}
+
+void selectComboText(HWND hDlg, int id, const std::wstring& text, const wchar_t* whenEmpty) {
+    HWND c = GetDlgItem(hDlg, id);
+    const std::wstring want = text.empty() ? std::wstring(whenEmpty) : text;
+    int n = (int)SendMessageW(c, CB_GETCOUNT, 0, 0);
+    for (int i = 0; i < n; ++i) {
+        wchar_t b[128] = { 0 };
+        if (SendMessageW(c, CB_GETLBTEXTLEN, i, 0) >= 128) continue;
+        SendMessageW(c, CB_GETLBTEXT, i, (LPARAM)b);
+        if (want == b) { SendMessageW(c, CB_SETCURSEL, i, 0); return; }
+    }
+    SendMessageW(c, CB_SETCURSEL, 0, 0);
+}
+
+std::wstring comboText(HWND hDlg, int id) {
+    HWND c = GetDlgItem(hDlg, id);
+    int sel = (int)SendMessageW(c, CB_GETCURSEL, 0, 0);
+    if (sel < 0) return std::wstring();
+    if (SendMessageW(c, CB_GETLBTEXTLEN, sel, 0) >= 128) return std::wstring();
+    wchar_t b[128] = { 0 };
+    SendMessageW(c, CB_GETLBTEXT, sel, (LPARAM)b);
+    return b;
+}
+
+// Show what the picker will call this profile. Recomputed on every keystroke in
+// the facet fields so the effect of a display name being blank is visible rather
+// than discovered after saving.
+// Read a profile file by slug, for resolving a parent's facets. The dialog's own
+// reader; main.cpp has its own for the same job.
+bool readProfileBySlug(const std::wstring& slug, std::wstring& outText) {
+    const std::wstring path = slug.empty() ? g_configDir + L"\\PipeHat.profile"
+                                           : g_configDir + L"\\PipeHat." + slug + L".profile";
+    std::ifstream in(path.c_str(), std::ios::binary);
+    if (!in) return false;
+    std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    outText = utf8ToW(bytes);
+    return true;
+}
+
+void refreshDerivedName(HWND hDlg) {
+    endpoint::Meta m;
+    m.application = getText(hDlg, IDC_EP_APPLICATION);
+    m.engine      = getText(hDlg, IDC_EP_ENGINE);
+    m.messageType = getText(hDlg, IDC_EP_MSGTYPE);
+    m.displayName = getText(hDlg, IDC_EP_DISPLAYNAME);
+    m.environment = endpoint::parseEnvironment(comboText(hDlg, IDC_EP_ENVIRONMENT));
+
+    // Fill blanks from the resolved parent, because the picker labels this
+    // profile with endpoint::resolve. Without this the preview shows "(QA)" for
+    // a child whose application and engine are inherited, while the picker shows
+    // "Meditech DFT > IRIS (QA)" -- the preview would understate the label it
+    // exists to preview, and the inherits dropdown would appear to do nothing.
+    const std::wstring inh = comboText(hDlg, IDC_EP_INHERITS);
+    if (!inh.empty() && inh != L"(none)") {
+        endpoint::Profile parent = endpoint::resolve(inh, readProfileBySlug);
+        if (m.application.empty()) m.application = parent.meta.application;
+        if (m.engine.empty())      m.engine      = parent.meta.engine;
+        if (m.messageType.empty()) m.messageType = parent.meta.messageType;
+        if (m.environment == endpoint::Environment::Unspecified)
+            m.environment = parent.meta.environment;
+    }
+
+    const std::wstring slug = nameFromDisplay(g_curDisplay);
+    SetDlgItemTextW(hDlg, IDC_EP_DERIVED, endpoint::displayName(m, slug).c_str());
+}
+
+void populateEndpoint(HWND hDlg) {
+    g_populating = true;
+    SetDlgItemTextW(hDlg, IDC_EP_APPLICATION, g_ep.meta.application.c_str());
+    SetDlgItemTextW(hDlg, IDC_EP_ENGINE,      g_ep.meta.engine.c_str());
+    SetDlgItemTextW(hDlg, IDC_EP_MSGTYPE,     g_ep.meta.messageType.c_str());
+    SetDlgItemTextW(hDlg, IDC_EP_DISPLAYNAME, g_ep.meta.displayName.c_str());
+    SetDlgItemTextW(hDlg, IDC_EP_DESCRIPTION, g_ep.meta.description.c_str());
+
+    populateEnvCombo(hDlg);
+    selectComboText(hDlg, IDC_EP_ENVIRONMENT,
+                    endpoint::environmentName(g_ep.meta.environment), L"(unspecified)");
+    populateInheritsCombo(hDlg, nameFromDisplay(g_curDisplay));
+    selectComboText(hDlg, IDC_EP_INHERITS, g_ep.meta.inherits, L"(none)");
+
+    SetDlgItemTextW(hDlg, IDC_MLLP_HOST, g_ep.conn.host.c_str());
+    SetDlgItemTextW(hDlg, IDC_MLLP_SENDPORT, std::to_wstring(g_ep.conn.sendPort).c_str());
+    SetDlgItemTextW(hDlg, IDC_MLLP_LISTENPORT, std::to_wstring(g_ep.conn.listenPort).c_str());
+    setChecked(hDlg, IDC_MLLP_ALLOWNONLOOP, g_ep.conn.allowNonLoopback);
+    SetDlgItemTextW(hDlg, IDC_MLLP_BINDADDR, g_ep.conn.bindAddr.c_str());
+    updateBindAddrEnabled(hDlg);
+
+    g_populating = false;
+    refreshDerivedName(hDlg);
+}
+
+void readEndpoint(HWND hDlg) {
+    g_ep.meta.application = getText(hDlg, IDC_EP_APPLICATION);
+    g_ep.meta.engine      = getText(hDlg, IDC_EP_ENGINE);
+    g_ep.meta.messageType = getText(hDlg, IDC_EP_MSGTYPE);
+    g_ep.meta.displayName = getText(hDlg, IDC_EP_DISPLAYNAME);
+    g_ep.meta.description = getText(hDlg, IDC_EP_DESCRIPTION);
+    g_ep.meta.environment = endpoint::parseEnvironment(comboText(hDlg, IDC_EP_ENVIRONMENT));
+
+    const std::wstring inh = comboText(hDlg, IDC_EP_INHERITS);
+    g_ep.meta.inherits = (inh == L"(none)") ? std::wstring() : inh;
+
+    g_ep.conn.host = getText(hDlg, IDC_MLLP_HOST);
+    if (g_ep.conn.host.empty()) g_ep.conn.host = L"127.0.0.1";
+    int sp = _wtoi(getText(hDlg, IDC_MLLP_SENDPORT).c_str());
+    if (sp > 0 && sp <= 65535) g_ep.conn.sendPort = sp;
+    int lp = _wtoi(getText(hDlg, IDC_MLLP_LISTENPORT).c_str());
+    if (lp > 0 && lp <= 65535) g_ep.conn.listenPort = lp;
+    g_ep.conn.allowNonLoopback = isChecked(hDlg, IDC_MLLP_ALLOWNONLOOP);
+    g_ep.conn.bindAddr = getText(hDlg, IDC_MLLP_BINDADDR);
+    if (g_ep.conn.bindAddr.empty()) g_ep.conn.bindAddr = L"127.0.0.1";
+
+    // A profile owns a connection once it already had one, or once the user has
+    // actually edited this section -- then it is written out even when every
+    // field still holds its default, so it cannot silently pick up whatever the
+    // defaults become later. Merely opening the profile is not an edit.
+    if (g_connDirty) g_ep.hasConnection = true;
+
+    // enabled and saveReceived are deliberately NOT read into g_ep.conn. They
+    // are global, and endpoint::parse refuses them on the way back in.
 }
 
 INT_PTR CALLBACK ruleProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM) {
@@ -384,14 +569,21 @@ void populateProfileCombo(HWND hDlg) {
     for (auto& p : enumerateProfiles())
         SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)p.c_str());
 }
-// Save the rules currently shown, then load the given profile into the grid.
+// Save the rules and endpoint fields currently shown, then load the given
+// profile into the grid. Reading the endpoint fields BEFORE saving matters:
+// without it, switching profiles would write the outgoing profile's file with
+// whatever facets were last loaded rather than what the user just typed.
 void switchToProfile(HWND hDlg, const std::wstring& disp, bool saveCurrent) {
-    if (saveCurrent && !g_path.empty()) saveRules(g_path);
+    if (saveCurrent && !g_path.empty()) {
+        readEndpoint(hDlg);
+        saveRules(g_path);
+    }
     g_curDisplay = disp;
     g_path = profilePathForDisplay(disp);
     loadRules(g_path);
     populateList(GetDlgItem(hDlg, IDC_RULE_LIST));
     SetDlgItemTextW(hDlg, IDC_PROFILE, disp.c_str());
+    populateEndpoint(hDlg);
 }
 
 INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -403,8 +595,9 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
             initColumns(hList);
             populateProfileCombo(hDlg);
             std::wstring activeDisp = displayFromName(g_activeProfilePtr ? *g_activeProfilePtr : std::wstring());
-            switchToProfile(hDlg, activeDisp, false);
-            populateMllp(hDlg);
+            switchToProfile(hDlg, activeDisp, false);   // also populates the endpoint section
+            populateGlobalMllp(hDlg);
+            updateBindAddrEnabled(hDlg);   // needs BOTH checkboxes populated first
             // "Add rule from current field": jump straight into the rule editor.
             if (!g_seedSeg.empty() && g_seedField > 0)
                 PostMessageW(hDlg, WM_COMMAND, MAKEWPARAM(IDC_RULE_ADD, BN_CLICKED), 0);
@@ -437,6 +630,23 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
                 }
                 return TRUE;
             }
+            if (HIWORD(wParam) == EN_CHANGE &&
+                (LOWORD(wParam) == IDC_MLLP_HOST || LOWORD(wParam) == IDC_MLLP_SENDPORT ||
+                 LOWORD(wParam) == IDC_MLLP_LISTENPORT || LOWORD(wParam) == IDC_MLLP_BINDADDR)) {
+                if (!g_populating) g_connDirty = true;
+                return TRUE;
+            }
+            // Any facet edit changes what the profile will be called.
+            if (HIWORD(wParam) == EN_CHANGE &&
+                (LOWORD(wParam) == IDC_EP_APPLICATION || LOWORD(wParam) == IDC_EP_ENGINE ||
+                 LOWORD(wParam) == IDC_EP_MSGTYPE     || LOWORD(wParam) == IDC_EP_DISPLAYNAME)) {
+                refreshDerivedName(hDlg);
+                return TRUE;
+            }
+            if (LOWORD(wParam) == IDC_EP_ENVIRONMENT && HIWORD(wParam) == CBN_SELCHANGE) {
+                refreshDerivedName(hDlg);
+                return TRUE;
+            }
             switch (LOWORD(wParam)) {
                 case IDC_PROFILE_NEW: {
                     // Use the (editable) combo text as the new profile name.
@@ -462,8 +672,14 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
                     return TRUE;
                 }
                 case IDC_MLLP_ALLOWNONLOOP:
-                    EnableWindow(GetDlgItem(hDlg, IDC_MLLP_BINDADDR),
-                                 isChecked(hDlg, IDC_MLLP_ALLOWNONLOOP));
+                    if (!g_populating) g_connDirty = true;
+                    updateBindAddrEnabled(hDlg);
+                    return TRUE;
+                case IDC_MLLP_ALLOWGLOBAL:
+                    updateBindAddrEnabled(hDlg);   // global, not part of the profile
+                    return TRUE;
+                case IDC_EP_INHERITS:
+                    if (HIWORD(wParam) == CBN_SELCHANGE) refreshDerivedName(hDlg);
                     return TRUE;
                 case IDC_RULE_ADD:
                     g_editIndex = -1;
@@ -492,12 +708,28 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
                     return TRUE;
                 }
                 case IDOK:
+                    readEndpoint(hDlg);
                     if (!saveRules(g_path)) {
                         MessageBoxW(hDlg, L"Could not write the profile file.",
                                     L"PipeHat Settings", MB_OK | MB_ICONERROR);
                         return TRUE;
                     }
-                    readMllp(hDlg);
+                    readGlobalMllp(hDlg);
+                    // Hand the selected profile's connection back so the caller
+                    // sends and listens where this profile says, without waiting
+                    // for a reload. The two global switches above are the only
+                    // other fields of cfg this dialog writes.
+                    if (g_cfg) {
+                        g_cfg->host             = g_ep.conn.host;
+                        g_cfg->sendPort         = g_ep.conn.sendPort;
+                        g_cfg->listenPort       = g_ep.conn.listenPort;
+                        g_cfg->bindAddr         = g_ep.conn.bindAddr;
+                        // allowNonLoopback is deliberately NOT copied here.
+                        // cfg's copy is the GLOBAL permission, already read by
+                        // readGlobalMllp; the caller ANDs it with the profile's
+                        // own flag. Copying the profile's value over it would
+                        // collapse the two halves back into one.
+                    }
                     if (g_activeProfilePtr) *g_activeProfilePtr = nameFromDisplay(g_curDisplay);
                     EndDialog(hDlg, IDOK);
                     return TRUE;

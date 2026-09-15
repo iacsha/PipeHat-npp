@@ -1,13 +1,13 @@
 ---
-task: "PipeHat field paths, Z segments, wrapped-segment alert"
+task: "PipeHat endpoint profiles -- the profile owns the connection"
 project: PipeHat
 effort: E3
 effort_source: classifier
 phase: verify
-progress: 33/38
+progress: 79/103
 mode: interactive
 started: 2026-08-25T13:12:03Z
-updated: 2026-08-25T16:52:00Z
+updated: 2026-09-15T00:00:00Z
 ---
 
 # PipeHat ISA
@@ -139,6 +139,77 @@ from the menu, and blocked from being sent over MLLP without confirmation.
 - [x] ISC-37: A `Join Wrapped Segments` menu command is registered in `getFuncsArray`
 - [x] ISC-38: `cmdMllpSend` and `cmdMllpReplay` warn and require confirmation when continuation lines exist
 
+### Endpoint profiles -- the profile owns the connection
+
+- [x] ISC-39: `src/EndpointProfile.h` exists and builds standalone with no Windows headers
+- [x] ISC-40: A profile file with no section headers parses entirely as rules (backward compatibility)
+- [x] ISC-41: `[Profile]` parses application, engine, messageType, displayName, description, inherits
+- [x] ISC-42: `environment` accepts `qa`, `Dev`, `PROD` case-insensitively
+- [x] ISC-43: Anti: `environment = Development` is NOT read as `DEV`; it warns and stays Unspecified
+- [x] ISC-44: `environmentRank` orders Local < DEV < QA < PROD, Unspecified last
+- [x] ISC-45: `[Connection]` parses host, sendPort, listenPort, bindAddr, allowNonLoopback
+- [x] ISC-46: A non-numeric or out-of-range port falls back to the default, never to a wild value
+- [x] ISC-47: An unparseable `allowNonLoopback` fails closed
+- [x] ISC-48: Anti: `enabled` in a `[Connection]` section is refused and warned about
+- [x] ISC-49: Anti: `saveReceived` in a `[Connection]` section is refused and warned about
+- [x] ISC-50: Anti: a rule line inside an unrecognised section does NOT become active
+- [x] ISC-51: `merge` concatenates parent rules before child rules so the child's attribute wins
+- [x] ISC-52: `merge` inherits a facet only where the child left it blank
+- [x] ISC-53: Anti: `merge` never inherits `allowNonLoopback` from the parent
+- [x] ISC-54: Anti: a child with no `[Connection]` resolves to loopback, not to its parent's address
+- [x] ISC-55: Anti: `merge` does not inherit the parent's `displayName`
+- [x] ISC-56: `resolve` follows a two-level chain and clears `inherits` once resolved
+- [x] ISC-57: `resolve` detects an inheritance cycle and still returns a usable profile
+- [x] ISC-58: `resolve` caps chain depth at `kMaxInheritDepth` and reports it
+- [x] ISC-59: `resolve` reports a missing parent and still loads the child
+- [x] ISC-60: `resolve` on a missing profile returns loopback defaults, never invented values
+- [x] ISC-61: `displayName` derives `Meditech DFT > IRIS (QA)` from facets
+- [x] ISC-62: An explicit `displayName` wins verbatim over the derivation
+- [x] ISC-63: With no facets the slug is the display name, and an empty slug reads `Default`
+- [x] ISC-64: Anti: `requiresExtraConfirm` returns true only for PROD and never suppresses a confirm
+- [x] ISC-65: Anti: no function in `EndpointProfile.h` lets `environment` skip a confirmation
+- [x] ISC-66: `serialize` writes a hand-typed `qa` back as canonical `QA`
+- [x] ISC-67: `serialize` round-trips every facet and connection field with no warnings
+- [x] ISC-68: Anti: a profile with no connection does not gain an empty `[Connection]` on save
+- [ ] ISC-69: `SettingsDialog` saves facets and connection alongside rules without dropping sections
+- [ ] ISC-70: The settings dialog shows the derived display name live as facets are edited
+- [ ] ISC-71: The inherits dropdown excludes the current profile, so self-inheritance needs hand-editing
+- [ ] ISC-72: Anti: switching the active profile stops a running MLLP listener
+- [ ] ISC-73: The cleartext-PHI confirmation is cached per profile slug per session, not globally
+- [ ] ISC-74: A PROD profile asks one extra confirmation before send or listen
+- [ ] ISC-75: `Switch Endpoint Profile` appears in the menu and groups entries by application/engine/type
+- [ ] ISC-76: Migration writes the old global `[MLLP]` values into a profile that has no `[Connection]`
+- [ ] ISC-77: Anti: migration does not re-run against a profile that already has a `[Connection]`
+- [ ] ISC-78: The full plugin compiles with zero errors on MSVC
+- [x] ISC-79: Anti: the migration runs at most once per session, never on a profile switch
+- [ ] ISC-80: Anti: switching to a connection-less profile does not inherit the outgoing host/ports
+- [ ] ISC-81: Editing the active profile's listenPort or bindAddr in Settings stops the listener
+- [ ] ISC-82: Anti: browsing the profile dropdown does not write a `[Connection]` into a visited file
+- [ ] ISC-83: The derived-name preview matches the picker label for a profile that inherits
+- [x] ISC-84: Anti: no control in IDD_SETTINGS overlaps another or falls outside its groupbox
+
+### Tree depth below the field (LinkedIn request)
+
+- [x] ISC-85: `src/FieldTree.h` exists and builds standalone with no Windows headers
+- [x] ISC-86: A field with three repetitions produces three `[n]` nodes
+- [x] ISC-87: Anti: a field with one value emits NO `[1]` node
+- [x] ISC-88: Components are named from the field's data type via `hl7dt::componentName`
+- [x] ISC-89: An untabled or empty data type renders the numeric path alone, never a guess
+- [x] ISC-90: Anti: an empty middle component keeps its position and does not renumber the rest
+- [x] ISC-91: Anti: a trailing empty component is not dropped
+- [x] ISC-92: Subcomponents render as `.n.m`
+- [x] ISC-93: A lone component carrying subcomponents still expands as component 1
+- [x] ISC-94: Anti: an escaped `\S\` or `\R\` does not create a component or repetition
+- [x] ISC-95: Splitting honours the message's own delimiters, not the defaults
+- [x] ISC-96: Anti: one runaway field is capped at `kMaxSiblings` with a summary node
+- [x] ISC-97: A long value is clipped in the label while the node keeps the full value
+- [x] ISC-98: Anti: no component value contains a separator turned into a space
+- [ ] ISC-99: `MessageTreeView::refresh` slices raw field text between FIELD_SEP tokens
+- [ ] ISC-100: Anti: MSH-2 is listed as a field but never split into components
+- [ ] ISC-101: Anti: the last field on a line carries no trailing CR into its label
+- [ ] ISC-102: Anti: clicking the last field of a segment navigates to that segment's line
+- [ ] ISC-103: Anti: a 480-message batch stops expanding at `valueNodeBudget` rather than stalling
+
 ## Test Strategy
 
 | isc | type | check | threshold | tool |
@@ -155,6 +226,16 @@ from the menu, and blocked from being sent over MLLP without confirmation.
 | ISC-35 | static | style assignment in styleRange | branch present | `grep` |
 | ISC-36 | unit | validator finding text | substring match | `tests/FieldPathTest.exe` |
 | ISC-37..38 | static | menu registration and send guard | branch present | `grep` |
+| ISC-39..68 | unit | endpoint profile parse/merge/resolve/serialize | 104 assertions, exit 0 | `tests/EndpointProfileTest.exe` |
+| ISC-69..71 | manual | settings dialog round-trip on a real profile file | sections survive a save | Notepad++ debug session |
+| ISC-72..74 | manual | switch with listener up, PROD send, repeat switch | listener stops, confirms fire | Notepad++ debug session |
+| ISC-75 | static | menu registration present | branch present | `grep` |
+| ISC-79 | static | session `static bool` gate present in the migration | branch present | `grep` |
+| ISC-80..83 | manual | switch to a legacy profile, edit port in place, browse the dropdown | file unchanged, listener stopped, label matches | Notepad++ debug session |
+| ISC-84 | static | rectangle sweep over every IDD_SETTINGS control | zero overlaps, zero out of bounds | layout checker script |
+| ISC-85..98 | unit | field splitting, naming, caps, escapes | 49 assertions, exit 0 | `tests/FieldTreeTest.exe` |
+| ISC-99..103 | manual | open a PID with repeats, an MSH, and a 480-message batch | subtree correct, no stall | Notepad++ debug session |
+| ISC-76..77 | manual | upgrade over an existing PipeHat.ini, then restart twice | written once, not twice | Notepad++ debug session |
 | all | build | full plugin compiles | zero errors | `cmake --build build --config Release` |
 
 ## Features
@@ -167,6 +248,9 @@ from the menu, and blocked from being sent over MLLP without confirmation.
 | variable-segid | Variable-length segment IDs (3, or Z-prefixed 4) across lexer, validator, tokenizer | ISC-21..29 | none | yes |
 | wrap-detect | Continuation-line detector plus validator finding | ISC-31..33, ISC-36 | variable-segid | no |
 | wrap-alert | `SCE_HL7_CONTINUATION` style, join command, MLLP send guard | ISC-34..35, ISC-37..38 | wrap-detect | no |
+| endpoint-core | `EndpointProfile.h`: sections, facets, environment enum, merge, resolve, serialize | ISC-39..68 | none | yes |
+| endpoint-dialog | Settings dialog endpoint section, derived-name preview, inherits picker | ISC-69..71 | endpoint-core | no |
+| endpoint-glue | `main.cpp` load/resolve/migrate, per-profile confirm, switch command | ISC-72..78 | endpoint-core | no |
 
 ## Decisions
 
@@ -192,6 +276,66 @@ from the menu, and blocked from being sent over MLLP without confirmation.
 - **2026-08-25T14:05:00Z** The MLLP guard warns and defaults to No rather than repairing silently.
   Editing a message on its way to a live interface without being asked is worse than sending a
   known-bad one, and the plugin cannot tell a chat-client wrap from a deliberate test fixture.
+
+- **2026-09-15T00:00:00Z** Connection settings move into the profile; `enabled` and `saveReceived`
+  deliberately stay global in `PipeHat.ini`. Both are switches a profile change would otherwise flip
+  as a side effect of a menu click -- one starts networking, the other starts writing cleartext PHI
+  to disk. `endpoint::parse` refuses them inside a `[Connection]` section rather than ignoring them,
+  so a hand-edited file says why it did not work.
+- **2026-09-15T00:00:00Z** `environment` is a label, not a gate. Deconstructing what actually decides
+  whether a bind is safe gives `allowNonLoopback` plus `bindAddr`; the environment string has no
+  causal relationship to the socket. It may therefore only ADD friction. There is no
+  `requiresLessConfirmation()` and there must never be one, or a mistyped label becomes a bypass.
+- **2026-09-15T00:00:00Z** The cleartext-PHI acknowledgement is keyed per profile slug per session.
+  A single session-wide bool stops describing the endpoint once switching is cheap; re-firing on
+  every switch trains the user to click through it. Per profile per session is the only version that
+  still carries information when the profile count grows.
+- **2026-09-15T00:00:00Z** A `[Connection]` is never inherited. Inheriting one would mean adding
+  `inherits = <parent with allowNonLoopback>` silently widens where a child binds, which makes
+  inheritance a privilege path. Rules inherit; the address does not.
+- **2026-09-15T00:00:00Z** Migration of the old global `[MLLP]` block is made idempotent by
+  construction -- it only writes a profile with no `[Connection]`, and writing one removes that
+  condition. An ini flag guarding it would re-run and overwrite a hand-edited profile the first time
+  the flag was lost.
+- **2026-09-15T00:00:00Z** `refined:` the display name derives from facets rather than from the
+  filename, so renaming costs no file operation and two profiles may share a label. The slug stays
+  the key.
+- **2026-09-15T00:00:00Z** Show your math on the E3 delegation floor (2, soft; 1 used): Forge was
+  invoked to read the Win32 changes that cannot be compiled on this host. A second Claude-family
+  reviewer was not spawned because `codex` is absent here, so Forge already degrades to the same
+  model family -- a second one returns correlated opinions rather than independent ones. The real
+  independent check is the MSVC build on the work PC, tracked as ISC-78.
+
+- **2026-09-15T00:00:00Z** `refuted:` the migration was believed safe because it only writes a
+  profile with no `[Connection]`. That is true but insufficient. `loadProfile` also runs on every
+  switch, and there `g_mllp` holds the OUTGOING profile's connection, so the guard let the previous
+  endpoint's host and ports be written permanently into any connection-less profile -- and because
+  `requiresExtraConfirm` reads the NEW profile's environment, a switch from PROD to a legacy profile
+  would keep the production address while dropping the production prompt. Now gated by a
+  session-scoped `static bool` so it happens at startup only. The call was not deleted: the startup
+  load is the entire upgrade path for a user with `AllowNonLoopback=1` in the ini.
+- **2026-09-15T00:00:00Z** `refined:` stopping the listener on a profile-NAME change is not enough.
+  An in-place edit of the active profile's `listenPort`, or clearing the global opt-in, moves the
+  socket without renaming anything. The comparison is now on `listenPort` and `effectiveBindAddr`
+  taken across the dialog and evaluated after `loadProfile`, so it sees the final ANDed values.
+- **2026-09-15T00:00:00Z** `refined:` `readEndpoint` no longer sets `hasConnection` unconditionally.
+  Browsing the profile dropdown calls it on every combo change, which silently rewrote every file
+  the user merely looked at. A `g_connDirty` flag, suppressed while `populateEndpoint` runs because
+  `SetDlgItemTextW` fires `EN_CHANGE` exactly like a keystroke, marks a real edit.
+
+- **2026-09-15T00:00:00Z** Tree depth below the field came from a LinkedIn comment asking for a
+  repetition sub-tree "like hl7inspector.com". Built as components and subcomponents too, not
+  repetitions alone: hl7inspector shows the full depth, and a repetition level whose children are
+  still flat joined text would answer the question halfway.
+- **2026-09-15T00:00:00Z** `refuted:` the field text shown in the tree was believed to be the field.
+  It was the lexer's FIELD_VALUE tokens joined with spaces, so every separator was discarded and
+  `DOE^JANE^Q` reached the panel as `DOE JANE Q`. `refresh` now slices the raw line between
+  FIELD_SEP tokens. `criterion_now:` ISC-98 asserts no component value contains a
+  separator-turned-space.
+- **2026-09-15T00:00:00Z** Found while rewriting the loop: the end-of-line field emit passed
+  `(LPARAM)(fieldIdx)` where every other node passes `line + 1`, so clicking the last field of a
+  segment navigated to whichever line shared that number. The two emit paths are now one lambda so
+  they cannot drift again.
 
 ## Verification
 

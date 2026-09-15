@@ -79,6 +79,104 @@ the dialog's profile combo + *New* button manage the files, the active name pers
 `[Conformance] ActiveProfile`, and `loadProfile`/`activeProfilePath` load the active one. The rule
 editor's segment/field inputs are `SegmentDB`-backed dropdowns (passed via `runModal`'s `SegmentDB*`).
 
+### Tree depth below the field (unreleased) -- repetitions, components, subcomponents
+
+`src/FieldTree.h` (header-only, **pure**) takes one field's RAW text plus the message's own
+delimiters and returns the nodes underneath it: a `[n]` level when the field actually repeats, then
+`.n` components named from `HL7DataTypes.h`, then `.n.m` subcomponents. Requested on LinkedIn after
+the v2.x post -- the panel stopped at the field, which is one level above the question people open
+it to answer. `tests/FieldTreeTest.cpp` covers it standalone; run it after touching the header,
+`HL7DataTypes.h`, or the loop in `MessageTreeView::refresh`.
+
+- **The repetition level appears only when the field repeats.** A `[1]` node on every single-valued
+  field would double the depth of the whole tree to say nothing.
+- **Empty pieces are emitted, never skipped.** In `123 MAIN ST^^ROCHESTER^NY` the reader needs to
+  see that ROCHESTER is component 3. Dropping the empty renumbers everything after it, which is
+  worse than useless to someone mapping an interface.
+- **`MessageTreeView::refresh` slices the field's raw text between FIELD_SEP tokens.** It used to
+  build the field by joining the lexer's FIELD_VALUE tokens with spaces, which discarded the
+  separators and rendered `DOE^JANE^Q` as `DOE JANE Q`. Do not go back to joining tokens.
+- **MSH-2 is never split.** It IS the encoding characters, the one field whose content is delimiter
+  characters; `emitField` returns before building children for it.
+- **Splitting on raw characters is correct** because an escape sequence can never contain an
+  unescaped delimiter (`\S\` is a literal `^`, `\R\` a literal `~`). Tested both ways.
+- **Two caps, both deliberate.** `hl7tree::kMaxSiblings` bounds one runaway field, and
+  `valueNodeBudget` in `refresh` bounds the whole panel -- every node is a synchronous
+  `TVM_INSERTITEMW` on the UI thread, and a 480-message batch multiplies by however many components
+  each field carries. Past the budget fields still list, they just stop expanding.
+
+### Endpoint profiles (unreleased) -- a profile owns its connection
+
+`src/EndpointProfile.h` (header-only, **pure** -- no Windows headers, no MSVC-only helpers) turns a
+`.profile` file into the per-interface unit. Alongside the rules it now carries:
+
+- `[Profile]` -- `application` (Meditech, Exa), `engine` (IRIS, BridgeLink), `messageType`,
+  `environment` (closed enum `Local|DEV|QA|PROD`), `displayName`, `description`, `inherits`.
+- `[Connection]` -- `host`, `sendPort`, `listenPort`, `bindAddr`, `allowNonLoopback`.
+- `[Rules]` (or `[Conformance]`) -- the existing `SEG-FIELD.attr=value` lines.
+
+**A file with no section header at all is read as rules from line one**, so every profile written
+before this change still loads. `main.cpp` resolves the chain with `endpoint::resolve` and hands
+only `rulesText` to `ConformanceProfile::parse`; `EndpointProfile.h` deliberately does **not**
+include `ConformanceProfile.h` (it uses `_wtoi`), which is what lets
+`tests/EndpointProfileTest.cpp` build and run off-Windows. Run that test after touching the header,
+the dialog's profile handling, or the migration.
+
+Display names derive from the facets (`Meditech DFT > IRIS (QA)`), never from the filename, so the
+slug stays the key and renaming costs no file operation. An explicit `displayName` wins verbatim.
+**Switch Endpoint Profile** (Ctrl+Alt+Shift+B) is a `TrackPopupMenu` picker grouped by
+application/engine/messageType and ordered `Local, DEV, QA, PROD`.
+
+**Endpoint-profile invariants -- do not regress:**
+
+- **`enabled` and `saveReceived` stay global in `PipeHat.ini`.** One starts networking, the other
+  writes cleartext PHI to disk. Neither may follow a profile, because selecting a profile is a menu
+  click. `endpoint::parse` *refuses* them inside `[Connection]` with a warning rather than ignoring
+  them silently.
+- **The non-loopback opt-in is ANDed across two places.** `PipeHat.ini` holds the global permission
+  (`g_mllpAllowNonLoopbackGlobal`) and the profile holds its own `allowNonLoopback`; a bind needs
+  both, so a profile file that arrives by email cannot expose a receiver on its own.
+  `saveMllpConfig` writes the global variable and never the ANDed value.
+- **`environment` may only ADD friction, never remove it.** It is a label and labels are wrong more
+  often than values. The real gate on a non-loopback bind is the ANDed opt-in plus a non-empty
+  `bindAddr`, and `MllpConfig::effectiveBindAddr` still fails safe. `Environment::Unrecognized` is
+  separate from `Unspecified` so an unreadable value confirms like PROD while an absent one adds
+  nothing to legacy profiles. There is no
+  `requiresLessConfirmation()` and there must never be one -- reading the enum as permission turns a
+  typo into an authorization bypass. `requiresExtraConfirm` can only return true.
+- **A `[Connection]` is never inherited.** Rules inherit; the address does not. Otherwise adding
+  `inherits = <parent that opted in>` quietly widens where a child binds and inheritance becomes a
+  privilege path. A child with no `[Connection]` resolves to the loopback defaults, *not* its
+  parent's.
+- **Switching the active profile stops a running listener.** The port and bind address change under
+  it; re-arming stays an explicit toggle. This applies to the Switch command *and* to changing the
+  profile inside the Settings dialog.
+- **The cleartext-PHI confirmation is keyed on `endpointFingerprint()`, per session** -- host, send
+  port, listen port, effective bind address, allowNonLoopback, environment. Session-wide stops
+  describing the endpoint you are pointed at; per switch trains the user to click through it; and
+  keying on the profile NAME would let an acknowledgement survive an edit to the host it authorized.
+- **Migration re-reads the profile's OWN file; it must never serialize `g_endpoint`.** `g_endpoint`
+  is the RESOLVED profile, with its parent's rules folded in and `inherits` cleared. Writing that
+  back over a child copies the parent's rules into it and breaks the inheritance link -- the exact
+  drift the feature exists to prevent.
+- **The migration is startup-only, gated by a session `static bool`.** `loadProfile` also runs on
+  every profile switch, and on a switch `g_mllp` holds the OUTGOING profile's connection -- so an
+  ungated migration writes the previous endpoint's host and ports into any profile that has no
+  `[Connection]`. You select "dev" and are still pointed at production, wearing a DEV label, which
+  also costs the PROD confirmation because `requiresExtraConfirm` reads the *new* profile's
+  environment. Do not delete the call to fix this: the startup load is the entire upgrade path for a
+  user who had `AllowNonLoopback=1` and a real `BindAddr` in the ini.
+- **The listener stops when the bind TARGET moves, not only when the profile name changes.**
+  Comparing `listenPort` and `effectiveBindAddr` across the Settings dialog is what catches an
+  in-place edit of the active profile. Name-only comparison would let a security opt-in the user just
+  switched off visibly do nothing while the old socket stayed up.
+- **The migration is idempotent by construction, not by a flag.** It writes the old global `[MLLP]`
+  values only into a profile that has no `[Connection]`, and doing so removes that condition. A flag
+  in the ini would re-run and overwrite a hand-edited profile the first time the flag was lost.
+- **`EndpointProfile.h` must stay free of Windows headers and MSVC-isms.** File access is behind a
+  `readFile` callback so every Win32 call lives in `main.cpp`. This is what keeps the test runnable
+  anywhere; `std::stoi` (throws) and `_wtoi` (MSVC-only) are both out, hence `detail::parseIntOr`.
+
 ### MLLP over TCP (v2.0, unreleased -- the plugin's only network feature)
 
 Three layers, each isolated:

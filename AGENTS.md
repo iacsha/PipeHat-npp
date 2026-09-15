@@ -96,6 +96,58 @@ Three isolated layers: `MllpProtocol.h` (pure framing + ACK, header-only, standa
 5. **Teardown at `NPPN_SHUTDOWN`, never in `DllMain`.** `Listener::stop()` joins its thread;
    doing that under the DLL loader lock deadlocks.
 
+## Endpoint profiles (unreleased) -- a profile owns its connection
+
+`src/EndpointProfile.h` (header-only, **pure**: no Windows headers, no MSVC-only helpers) makes the
+`.profile` file the per-interface unit. It gains `[Profile]` (`application`, `engine`, `messageType`,
+`environment` as the closed enum `Local|DEV|QA|PROD`, `displayName`, `description`, `inherits`) and
+`[Connection]` (`host`, `sendPort`, `listenPort`, `bindAddr`, `allowNonLoopback`) beside the rules.
+A file with **no section header at all is read as rules from line one**, so old profiles still load.
+`endpoint::resolve` walks the inheritance chain through a `readFile` callback, so every Win32 call
+stays in `main.cpp`. Run `tests/EndpointProfileTest.cpp` after touching any of it.
+
+**Non-negotiable endpoint-profile invariants (do not regress):**
+
+1. **`enabled` and `saveReceived` stay global in `PipeHat.ini`.** One starts networking, the other
+   writes cleartext PHI to disk, and selecting a profile is a menu click. `endpoint::parse` refuses
+   both inside `[Connection]` with a warning rather than ignoring them.
+2. **`environment` may only ADD friction.** It is a label; `allowNonLoopback` plus `bindAddr` is the
+   real gate and `effectiveBindAddr()` still fails safe. There is no `requiresLessConfirmation()`
+   and there must never be one -- reading the enum as permission makes a typo a bypass.
+2b. **The non-loopback opt-in is ANDed across two places.** `PipeHat.ini` holds the global
+   permission and the profile holds its own `allowNonLoopback`; a bind needs both. A profile is a
+   file, and files arrive by email and get dropped into config folders, so a profile alone must
+   never be able to expose a PHI receiver on the network. In `main.cpp` the global half lives in
+   `g_mllpAllowNonLoopbackGlobal` and only the ANDed result reaches `g_mllp.allowNonLoopback`.
+   `saveMllpConfig` writes the global variable, never the ANDed value, or a session with a loopback
+   profile active would silently clear the user's standing permission.
+2c. **An unreadable `environment` is treated as PROD, an absent one as nothing.**
+   `Environment::Unrecognized` is a distinct value from `Unspecified` for this reason:
+   a file that tried to name an environment and failed gets the most-confirming treatment, while
+   every legacy profile with no environment at all keeps its current friction. A typo must not be
+   the quiet path.
+3. **A `[Connection]` is never inherited.** Rules inherit, the address does not. A child with no
+   `[Connection]` resolves to loopback defaults, never its parent's, or `inherits` becomes a
+   privilege path.
+4. **Switching the active profile stops a running listener** -- from the Switch command and from the
+   Settings dialog alike. The port and bind address just changed under it; re-arming is explicit.
+5. **The cleartext-PHI acknowledgement is keyed on `endpointFingerprint()`, per session** --
+   host, send port, listen port, effective bind address, allowNonLoopback and environment. Keying
+   it on the profile NAME instead would let an acknowledgement survive an edit to the very host it
+   authorized, and would let two profiles sharing a label share an approval.
+5b. **The migration is startup-only**, gated by a session `static bool`. `loadProfile` also runs on
+   every switch, where `g_mllp` holds the OUTGOING profile's connection -- ungated, it writes the
+   previous endpoint's host and ports into any profile lacking a `[Connection]`, so "dev" stays
+   pointed at production and loses the PROD confirm. Do not delete the call instead; it is the whole
+   upgrade path for an existing `AllowNonLoopback=1` user.
+5c. **The listener stops when the bind TARGET moves**, not only when the profile name changes --
+   `listenPort` and `effectiveBindAddr` are compared across the Settings dialog, so an in-place edit
+   of the active profile is caught.
+6. **The migration of the old global `[MLLP]` block is idempotent by construction** -- it writes only
+   a profile that has no `[Connection]`, and writing one removes that condition. No ini flag.
+7. **Keep `EndpointProfile.h` free of Windows headers and MSVC-isms.** `std::stoi` throws and
+   `_wtoi` is MSVC-only, hence `detail::parseIntOr`. This is what keeps the test runnable anywhere.
+
 ## Dialogs / settings GUI (v1.3, NOT header-only)
 
 `SettingsDialog.{h,cpp}` is a modal conformance-rule editor (`Settings`, Ctrl+Alt+Shift+P). Unlike the

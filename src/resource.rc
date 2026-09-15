@@ -13,45 +13,76 @@ END
 // Dialog 2 (IDD_SETTINGS) — PipeHat settings: conformance rules plus the MLLP
 // network section. Conformance rules persist to PipeHat.profile; MLLP settings
 // to PipeHat.ini.
-IDD_SETTINGS DIALOGEX 0, 0, 344, 356
+// The two groups are split by what follows the profile and what does not. That
+// is not cosmetic: the whole point of the endpoint profile is that selecting one
+// changes where you are pointed, and the user has to be able to see at a glance
+// which switches a profile change will and will not move.
+IDD_SETTINGS DIALOGEX 0, 0, 344, 458
 STYLE DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "PipeHat Settings"
 FONT 8, "MS Shell Dlg"
 BEGIN
     LTEXT           "Profile:", -1, 7, 9, 28, 10
-    COMBOBOX        IDC_PROFILE, 38, 7, 150, 120,
+    COMBOBOX        IDC_PROFILE, 38, 7, 120, 160,
                     CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
-    PUSHBUTTON      "&New", IDC_PROFILE_NEW, 192, 6, 44, 14
+    PUSHBUTTON      "&New", IDC_PROFILE_NEW, 162, 6, 34, 14
+    LTEXT           "", IDC_EP_DERIVED, 202, 9, 135, 10
     LTEXT           "Rules for the selected profile. Switch or create per-interface profiles above.",
                     -1, 7, 24, 330, 10
     CONTROL         "", IDC_RULE_LIST, "SysListView32",
                     LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP,
-                    7, 36, 330, 108
-    PUSHBUTTON      "&Add...", IDC_RULE_ADD, 7, 148, 52, 14
-    PUSHBUTTON      "&Edit...", IDC_RULE_EDIT, 63, 148, 52, 14
-    PUSHBUTTON      "&Remove", IDC_RULE_REMOVE, 119, 148, 52, 14
+                    7, 36, 330, 96
+    PUSHBUTTON      "&Add...", IDC_RULE_ADD, 7, 136, 52, 14
+    PUSHBUTTON      "&Edit...", IDC_RULE_EDIT, 63, 136, 52, 14
+    PUSHBUTTON      "&Remove", IDC_RULE_REMOVE, 119, 136, 52, 14
 
-    GROUPBOX        "MLLP (network) - HL7 over TCP", -1, 7, 170, 330, 138
-    AUTOCHECKBOX    "Enable MLLP networking (off by default)", IDC_MLLP_ENABLE, 14, 184, 200, 10
-    AUTOCHECKBOX    "Save received messages to disk (writes cleartext PHI - off by default)",
-                    IDC_MLLP_SAVERECV, 14, 198, 320, 10
-    LTEXT           "Send to Host:", -1, 14, 216, 54, 10
-    EDITTEXT        IDC_MLLP_HOST, 70, 214, 120, 12, ES_AUTOHSCROLL
-    LTEXT           "Port:", -1, 200, 216, 20, 10
-    EDITTEXT        IDC_MLLP_SENDPORT, 222, 214, 40, 12, ES_NUMBER | ES_AUTOHSCROLL
-    LTEXT           "Listener port:", -1, 14, 234, 54, 10
-    EDITTEXT        IDC_MLLP_LISTENPORT, 70, 232, 40, 12, ES_NUMBER | ES_AUTOHSCROLL
+    GROUPBOX        "Endpoint - these follow the selected profile", -1, 7, 156, 330, 180
+    LTEXT           "Application:", -1, 14, 172, 46, 10
+    EDITTEXT        IDC_EP_APPLICATION, 62, 170, 90, 12, ES_AUTOHSCROLL
+    LTEXT           "Engine:", -1, 162, 172, 32, 10
+    EDITTEXT        IDC_EP_ENGINE, 196, 170, 90, 12, ES_AUTOHSCROLL
+    LTEXT           "Message type:", -1, 14, 188, 46, 10
+    EDITTEXT        IDC_EP_MSGTYPE, 62, 186, 90, 12, ES_AUTOHSCROLL
+    LTEXT           "Environment:", -1, 162, 188, 46, 10
+    COMBOBOX        IDC_EP_ENVIRONMENT, 210, 186, 76, 90,
+                    CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Display name:", -1, 14, 204, 46, 10
+    EDITTEXT        IDC_EP_DISPLAYNAME, 62, 202, 224, 12, ES_AUTOHSCROLL
+    LTEXT           "Leave the display name blank to derive it from the fields above.",
+                    -1, 62, 216, 224, 10
+    LTEXT           "Description:", -1, 14, 230, 46, 10
+    EDITTEXT        IDC_EP_DESCRIPTION, 62, 228, 224, 12, ES_AUTOHSCROLL
+    LTEXT           "Inherits rules from:", -1, 14, 246, 66, 10
+    COMBOBOX        IDC_EP_INHERITS, 82, 244, 120, 120,
+                    CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "(rules only - never the connection)",
+                    -1, 206, 242, 124, 20
+
+    LTEXT           "Connection - where this endpoint lives:", -1, 14, 264, 180, 10
+    LTEXT           "Send to Host:", -1, 14, 280, 54, 10
+    EDITTEXT        IDC_MLLP_HOST, 70, 278, 120, 12, ES_AUTOHSCROLL
+    LTEXT           "Port:", -1, 200, 280, 20, 10
+    EDITTEXT        IDC_MLLP_SENDPORT, 222, 278, 40, 12, ES_NUMBER | ES_AUTOHSCROLL
+    LTEXT           "Listener port:", -1, 14, 296, 54, 10
+    EDITTEXT        IDC_MLLP_LISTENPORT, 70, 294, 40, 12, ES_NUMBER | ES_AUTOHSCROLL
     AUTOCHECKBOX    "Allow binding a non-loopback interface (exposes a receiver on your network)",
-                    IDC_MLLP_ALLOWNONLOOP, 14, 250, 320, 10
-    LTEXT           "Bind address:", -1, 14, 266, 54, 10
-    EDITTEXT        IDC_MLLP_BINDADDR, 70, 264, 120, 12, ES_AUTOHSCROLL
-    LTEXT           "Warning: MLLP is cleartext - PHI crosses the network unencrypted. Use loopback or a trusted network only.",
-                    -1, 14, 282, 320, 20
+                    IDC_MLLP_ALLOWNONLOOP, 14, 310, 316, 10
+    LTEXT           "Bind address:", -1, 14, 324, 54, 10
+    EDITTEXT        IDC_MLLP_BINDADDR, 70, 322, 120, 12, ES_AUTOHSCROLL
 
-    DEFPUSHBUTTON   "&Save", IDOK, 229, 318, 52, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 285, 318, 52, 14
-    LTEXT           "Saved in the Notepad++ plugin config folder (PipeHat.profile / PipeHat.ini).",
-                    -1, 7, 338, 330, 10
+    GROUPBOX        "Global - these do NOT follow the profile", -1, 7, 342, 330, 76
+    AUTOCHECKBOX    "Enable MLLP networking (off by default)", IDC_MLLP_ENABLE, 14, 356, 200, 10
+    AUTOCHECKBOX    "Save received messages to disk (writes cleartext PHI - off by default)",
+                    IDC_MLLP_SAVERECV, 14, 370, 316, 10
+    AUTOCHECKBOX    "Permit non-loopback binds at all (a profile also has to ask for one)",
+                    IDC_MLLP_ALLOWGLOBAL, 14, 384, 316, 10
+    LTEXT           "Warning: MLLP is cleartext - PHI crosses the network unencrypted. Use loopback or a trusted network only.",
+                    -1, 14, 398, 316, 18
+
+    DEFPUSHBUTTON   "&Save", IDOK, 229, 422, 52, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 285, 422, 52, 14
+    LTEXT           "Saved in the Notepad++ plugin config folder (PipeHat[.name].profile / PipeHat.ini).",
+                    -1, 7, 442, 330, 10
 END
 
 // Dialog 3 (IDD_RULE) — add or edit a single conformance rule.

@@ -106,6 +106,22 @@ HTREEITEM MessageTreeView::addFieldNode(HTREEITEM parent, const std::wstring& te
     return (HTREEITEM)SendMessageW(m_hTree, TVM_INSERTITEMW, 0, (LPARAM)&tvis);
 }
 
+// Hang a field's repetition / component / subcomponent nodes. Every node carries
+// the same lParam as its field, so clicking anywhere in the subtree navigates to
+// the segment's line -- the tree stores line+1 and onTreeClick does SCI_GOTOLINE.
+// Navigating to the exact component offset would need the byte range that
+// analyzeCaretField computes in main.cpp; the line is the honest answer until
+// that is plumbed through.
+void MessageTreeView::addValueNodes(HTREEITEM parent, const std::vector<hl7tree::Node>& nodes,
+                                    LPARAM lparam, int& budget) {
+    for (const auto& n : nodes) {
+        if (budget <= 0) return;
+        --budget;
+        HTREEITEM h = addFieldNode(parent, n.label, 0, 0, lparam);
+        if (!n.children.empty()) addValueNodes(h, n.children, lparam, budget);
+    }
+}
+
 void MessageTreeView::refresh(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrDirect,
                                HL7Lexer& sharedLexer, SegmentDB& segDB) {
     if (!m_hTree || !fnDirect) return;
@@ -131,6 +147,14 @@ void MessageTreeView::refresh(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrD
     const bool group = index.count() > 1;
     HTREEITEM msgParent = TVI_ROOT;
     int curMsg = -1;
+
+    // Every node is a synchronous TVM_INSERTITEMW on the UI thread. The segment
+    // and field levels were already bounded by the message itself; the value
+    // levels below them are not -- a 480-message batch multiplies by however many
+    // components each field happens to carry. Past this budget the fields still
+    // list, they just stop expanding, so a huge log degrades to the tree users
+    // had before instead of freezing Notepad++ while it inserts.
+    int valueNodeBudget = 20000;
 
     for (int li = 0; li < lineCount; li++) {
         std::wstring wlStr = getLineW(fnDirect, ptrDirect, li);
@@ -177,49 +201,36 @@ void MessageTreeView::refresh(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrD
         std::vector<HL7Token> tokens;
         sharedLexer.tokenize(wl, wlLen, tokens);
 
+        const HL7Delimiters& dl = sharedLexer.delimiters();
+        hl7tree::Delims treeDelims;
+        treeDelims.comp   = dl.compSep;
+        treeDelims.repeat = dl.repeatSep;
+        treeDelims.sub    = dl.subcompSep;
+
         // MSH-1 is the field separator itself, so the first value is MSH-2 — start
         // the counter one higher for MSH to keep field labels aligned.
         int fieldIdx = (segId == L"MSH") ? 1 : 0;
-        std::wstring fieldValue;
-        bool inField = false;
 
-        for (const auto& tok : tokens) {
-            if (tok.type == HL7TokenType::FIELD_SEP) {
-                if (inField) {
-                    // Emit previous field
-                    const HL7FieldDef* fd = segDB.lookupField(segId, fieldIdx);
-                    std::wstring flabel;
-                    if (fd) {
-                        flabel = std::to_wstring(fieldIdx) + L": " + fd->name + L"  [" + fd->dataType + L"]";
-                    } else {
-                        flabel = std::to_wstring(fieldIdx) + L": (unnamed)";
-                    }
-                    if (!fieldValue.empty()) {
-                        flabel += L" = " + fieldValue;
-                    }
-                    {
-                        std::wstring decoded = hl7trig::decodeField(segId, fieldIdx, wlStr,
-                            sharedLexer.delimiters().fieldSep, sharedLexer.delimiters().compSep);
-                        if (!decoded.empty()) flabel += L"  \x21D2 " + decoded; // ⇒
-                    }
-                    addFieldNode(segNode, flabel, li, fieldIdx, (LPARAM)(li + 1));
-                    fieldValue.clear();
-                }
-                inField = false;
-                fieldIdx++;
-            } else if (tok.type == HL7TokenType::SEGMENT_ID) {
-                // Skip — already handled as node label
-            } else if (tok.type == HL7TokenType::FIELD_VALUE) {
-                inField = true;
-                if (!fieldValue.empty()) fieldValue += L" ";
-                std::wstring val(wl + tok.startPos, tok.length);
-                if (!val.empty()) {
-                    fieldValue += val;
-                }
-            }
-        }
-        // Emit last field
-        if (inField) {
+        // The field's RAW text, sliced straight out of the line between field
+        // separators. This replaced joining the lexer's FIELD_VALUE tokens with
+        // spaces, which threw the component and repetition separators away and
+        // rendered `DOE^JANE^Q` as `DOE JANE Q` — unreadable for the one question
+        // the tree exists to answer, which is what sits at which position.
+        int valStart = -1;
+
+        // Emit one field node plus its repetition / component / subcomponent
+        // subtree. Shared by the in-loop and end-of-line emits so the two cannot
+        // drift apart; they already had, and the end-of-line copy was passing the
+        // field number where every other node passes line+1, so clicking the last
+        // field of a segment jumped to whatever line happened to share that number.
+        auto emitField = [&](std::wstring raw) {
+            // getLineW returns the line's own terminator, so the LAST field on a
+            // line carries a trailing CR/LF. Left in, it becomes a stray glyph in
+            // the label and a phantom character in the final subcomponent.
+            while (!raw.empty() && (raw.back() == L'\r' || raw.back() == L'\n'))
+                raw.pop_back();
+            if (raw.empty()) return;
+
             const HL7FieldDef* fd = segDB.lookupField(segId, fieldIdx);
             std::wstring flabel;
             if (fd) {
@@ -227,15 +238,37 @@ void MessageTreeView::refresh(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrD
             } else {
                 flabel = std::to_wstring(fieldIdx) + L": (unnamed)";
             }
-            if (!fieldValue.empty()) {
-                flabel += L" = " + fieldValue;
+            if (!raw.empty()) flabel += L" = " + raw;
+
+            std::wstring decoded = hl7trig::decodeField(segId, fieldIdx, wlStr,
+                dl.fieldSep, dl.compSep);
+            if (!decoded.empty()) flabel += L"  \x21D2 " + decoded; // ⇒
+
+            HTREEITEM fieldNode = addFieldNode(segNode, flabel, li, fieldIdx, (LPARAM)(li + 1));
+
+            // MSH-2 IS the encoding characters (`^~\&`), the one place in a message
+            // where delimiter characters are data. Splitting it would render the
+            // component separator as a component separator.
+            if (segId == L"MSH" && fieldIdx == 2) return;
+
+            const std::wstring dataType = fd ? fd->dataType : std::wstring();
+            addValueNodes(fieldNode, hl7tree::buildFieldChildren(raw, treeDelims, dataType),
+                          (LPARAM)(li + 1), valueNodeBudget);
+        };
+
+        for (const auto& tok : tokens) {
+            if (tok.type != HL7TokenType::FIELD_SEP) continue;
+            if (fieldIdx >= 1 && valStart >= 0 && tok.startPos > valStart) {
+                std::wstring raw = wlStr.substr((size_t)valStart, (size_t)(tok.startPos - valStart));
+                if (!raw.empty()) emitField(raw);
             }
-            {
-                std::wstring decoded = hl7trig::decodeField(segId, fieldIdx, wlStr,
-                    sharedLexer.delimiters().fieldSep, sharedLexer.delimiters().compSep);
-                if (!decoded.empty()) flabel += L"  \x21D2 " + decoded; // ⇒
-            }
-            addFieldNode(segNode, flabel, li, fieldIdx, (LPARAM)(fieldIdx));
+            valStart = tok.startPos + tok.length;
+            fieldIdx++;
+        }
+        // Emit the last field, which has no separator after it.
+        if (fieldIdx >= 1 && valStart >= 0 && valStart < wlLen) {
+            std::wstring raw = wlStr.substr((size_t)valStart);
+            if (!raw.empty()) emitField(raw);
         }
     }
 }

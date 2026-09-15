@@ -2,6 +2,8 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <string>
+#include <vector>
+#include "FieldTree.h"
 #include "Docking.h"
 #include "npp/PluginInterface.h"
 #include "npp/Notepad_plus_msgs.h"
@@ -49,6 +51,10 @@ private:
                              HTREEITEM parent = TVI_ROOT);
     HTREEITEM addMessageNode(const std::wstring& text, LPARAM lparam);
     HTREEITEM addFieldNode(HTREEITEM parent, const std::wstring& text, int lineNum, int fieldIdx, LPARAM lparam);
+    // Repetition / component / subcomponent nodes under a field. Recursive, so
+    // one call hangs the whole subtree.
+    void addValueNodes(HTREEITEM parent, const std::vector<hl7tree::Node>& nodes, LPARAM lparam,
+                       int& budget);
 
     static INT_PTR CALLBACK dlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
     static MessageTreeView* s_instance; // singleton for static callback
