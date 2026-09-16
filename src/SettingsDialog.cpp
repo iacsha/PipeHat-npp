@@ -51,6 +51,12 @@ endpoint::Profile g_ep;
 // file the user only looked at is its own bug.
 bool g_connDirty = false;
 
+// Any unsaved edit to the profile on screen: facets, connection, or rules.
+// Separate from g_connDirty, which answers a narrower question (has this profile
+// earned a [Connection] section). This one decides whether leaving the profile
+// needs to ask first.
+bool g_dirty = false;
+
 // True while populateEndpoint is writing the controls. SetDlgItemTextW fires
 // EN_CHANGE exactly like a keystroke does, so without this every profile the
 // dialog merely displays would immediately look edited and g_connDirty would be
@@ -93,6 +99,7 @@ void loadRules(const std::wstring& path) {
     g_rules.clear();
     g_ep = endpoint::Profile();
     g_connDirty = false;
+    g_dirty = false;
     std::ifstream in(path.c_str(), std::ios::binary);
     if (!in) return;
     std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -245,29 +252,20 @@ void populateFieldCombo(HWND hDlg, const std::wstring& seg) {
 //
 // Only the two switches a profile must never be able to flip on its own live
 // here. Everything else about the connection belongs to the endpoint below.
-void populateGlobalMllp(HWND hDlg) {
-    if (!g_cfg) return;
-    setChecked(hDlg, IDC_MLLP_ENABLE, g_cfg->enabled);
-    setChecked(hDlg, IDC_MLLP_SAVERECV, g_cfg->saveReceived);
-    // cfg->allowNonLoopback carries the GLOBAL permission in and out of this
-    // dialog. The per-profile half lives in g_ep.conn and is edited in the
-    // endpoint section; a bind needs both.
-    setChecked(hDlg, IDC_MLLP_ALLOWGLOBAL, g_cfg->allowNonLoopback);
-}
+// The global half of the non-loopback permission now lives in Plug-in Settings,
+// a different window. The profile screen therefore has to SAY what it is set to:
+// otherwise the user ticks the per-profile box, nothing binds, and the only
+// explanation is a line in PipeHat.log.
+void refreshGlobalState(HWND hDlg) {
+    const bool global = g_cfg && g_cfg->allowNonLoopback;
+    SetDlgItemTextW(hDlg, IDC_GLOBAL_STATE,
+        global ? L"Plug-in setting \"Permit non-loopback binds\" is ON."
+               : L"Blocked: \"Permit non-loopback binds\" is OFF for the plug-in.");
 
-void readGlobalMllp(HWND hDlg) {
-    if (!g_cfg) return;
-    g_cfg->enabled = isChecked(hDlg, IDC_MLLP_ENABLE);
-    g_cfg->saveReceived = isChecked(hDlg, IDC_MLLP_SAVERECV);
-    g_cfg->allowNonLoopback = isChecked(hDlg, IDC_MLLP_ALLOWGLOBAL);
-}
-
-// The bind address is only meaningful when BOTH halves of the opt-in are set.
-// Greying it otherwise is how the AND is made visible rather than discovered.
-void updateBindAddrEnabled(HWND hDlg) {
-    const bool both = isChecked(hDlg, IDC_MLLP_ALLOWNONLOOP) &&
-                      isChecked(hDlg, IDC_MLLP_ALLOWGLOBAL);
-    EnableWindow(GetDlgItem(hDlg, IDC_MLLP_BINDADDR), both);
+    // The bind address is only meaningful when BOTH halves are set. Greying it
+    // is how the AND is made visible rather than discovered.
+    EnableWindow(GetDlgItem(hDlg, IDC_MLLP_BINDADDR),
+                 isChecked(hDlg, IDC_MLLP_ALLOWNONLOOP) && global);
 }
 
 // ── endpoint section: [Profile] facets + [Connection] of the active profile ──
@@ -383,7 +381,7 @@ void populateEndpoint(HWND hDlg) {
     SetDlgItemTextW(hDlg, IDC_MLLP_LISTENPORT, std::to_wstring(g_ep.conn.listenPort).c_str());
     setChecked(hDlg, IDC_MLLP_ALLOWNONLOOP, g_ep.conn.allowNonLoopback);
     SetDlgItemTextW(hDlg, IDC_MLLP_BINDADDR, g_ep.conn.bindAddr.c_str());
-    updateBindAddrEnabled(hDlg);
+    refreshGlobalState(hDlg);
 
     g_populating = false;
     refreshDerivedName(hDlg);
@@ -528,6 +526,7 @@ void editRule(HWND hParent, HINSTANCE hInst, HWND hList) {
         g_rules.push_back(g_editResult);
     }
     populateList(hList);
+    g_dirty = true;
 }
 
 // ── named/switchable profiles ──
@@ -569,21 +568,358 @@ void populateProfileCombo(HWND hDlg) {
     for (auto& p : enumerateProfiles())
         SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)p.c_str());
 }
-// Save the rules and endpoint fields currently shown, then load the given
-// profile into the grid. Reading the endpoint fields BEFORE saving matters:
-// without it, switching profiles would write the outgoing profile's file with
-// whatever facets were last loaded rather than what the user just typed.
-void switchToProfile(HWND hDlg, const std::wstring& disp, bool saveCurrent) {
-    if (saveCurrent && !g_path.empty()) {
-        readEndpoint(hDlg);
-        saveRules(g_path);
-    }
+// Load a profile into the dialog. This NO LONGER writes the outgoing profile.
+//
+// It used to, on every combo change, which meant browsing the dropdown silently
+// rewrote every file you passed through -- with no Save, no Cancel and no undo.
+// A modal dialog with Save and Cancel promises the opposite. The caller now asks
+// the user what to do about unsaved edits before getting here.
+void switchToProfile(HWND hDlg, const std::wstring& disp) {
     g_curDisplay = disp;
     g_path = profilePathForDisplay(disp);
     loadRules(g_path);
     populateList(GetDlgItem(hDlg, IDC_RULE_LIST));
     SetDlgItemTextW(hDlg, IDC_PROFILE, disp.c_str());
     populateEndpoint(hDlg);
+}
+
+// Returns true when it is safe to leave the current profile. Saves, discards, or
+// stays put according to the user -- Cancel means "stay", so the caller must not
+// proceed with the switch.
+bool confirmLeaveProfile(HWND hDlg) {
+    if (!g_dirty || g_path.empty()) return true;
+
+    const std::wstring name = g_curDisplay.empty() ? std::wstring(kDefaultDisplay) : g_curDisplay;
+    const std::wstring msg = L"Save your changes to profile '" + name + L"'?\r\n\r\n"
+                             L"Choose No to discard them and load the other profile anyway.";
+    const int r = MessageBoxW(hDlg, msg.c_str(), L"PipeHat Profile Settings",
+                              MB_YESNOCANCEL | MB_ICONQUESTION);
+    if (r == IDCANCEL) return false;
+    if (r == IDYES) {
+        readEndpoint(hDlg);
+        if (!saveRules(g_path)) {
+            MessageBoxW(hDlg, L"Could not write the profile file. Your changes are still here.",
+                        L"PipeHat Profile Settings", MB_OK | MB_ICONERROR);
+            return false;
+        }
+    }
+    g_dirty = false;
+    return true;
+}
+
+// ── tooltips ──
+//
+// The dialog cannot grow another paragraph per field without becoming a wall, but
+// several of these labels name a concept rather than describe one: "Engine" and
+// "Inherits rules from" mean nothing to someone opening this for the first time.
+// A tooltip is the right amount of room for that.
+HWND g_tips = nullptr;
+
+void addTip(HWND hDlg, int id, const wchar_t* text) {
+    HWND ctl = GetDlgItem(hDlg, id);
+    if (!ctl || !g_tips) return;
+    TOOLINFOW ti;
+    ZeroMemory(&ti, sizeof(ti));
+    ti.cbSize   = sizeof(ti);
+    ti.uFlags   = TTF_IDISHWND | TTF_SUBCLASS;
+    ti.hwnd     = hDlg;
+    ti.uId      = (UINT_PTR)ctl;
+    ti.lpszText = (LPWSTR)text;
+    SendMessageW(g_tips, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+}
+
+void createTips(HWND hDlg) {
+    g_tips = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+                             WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+                             CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+                             hDlg, nullptr, nullptr, nullptr);
+    if (!g_tips) return;
+    // Long tooltips wrap only if a max width is set; the default is a single line.
+    SendMessageW(g_tips, TTM_SETMAXTIPWIDTH, 0, 320);
+
+    addTip(hDlg, IDC_PROFILE,
+        L"One profile per interface. It carries this endpoint's conformance rules AND the "
+        L"address PipeHat sends to, so switching profiles repoints the plug-in in one step.");
+    addTip(hDlg, IDC_PROFILE_NEW,
+        L"Walks through the questions that make up a profile, then creates the file. "
+        L"Nothing is written if you cancel.");
+    addTip(hDlg, IDC_PROFILE_DELETE,
+        L"Deletes this profile's file. Cannot be undone, and warns first if other profiles "
+        L"inherit their rules from it.");
+    addTip(hDlg, IDC_EP_APPLICATION,
+        L"The clinical system the data is about: Meditech, Exa, Epic, Cerner. "
+        L"Groups this profile in the picker.");
+    addTip(hDlg, IDC_EP_ENGINE,
+        L"The interface engine this profile talks to: IRIS, BridgeLink, Rhapsody, Mirth. "
+        L"Usually the host you actually connect to.");
+    addTip(hDlg, IDC_EP_MSGTYPE, L"DFT, ADT, ORU, SIU. Used for grouping and for the display name.");
+    addTip(hDlg, IDC_EP_ENVIRONMENT,
+        L"Orders the picker Local, DEV, QA, PROD so a promotion path reads top to bottom. "
+        L"PROD adds one extra confirmation before sending. It is a label and never grants "
+        L"access -- binding a real interface still needs both opt-ins.");
+    addTip(hDlg, IDC_EP_DISPLAYNAME,
+        L"Leave blank to build the name from the fields above, for example "
+        L"Meditech DFT > IRIS (QA). Anything you type here wins instead.");
+    addTip(hDlg, IDC_EP_INHERITS,
+        L"Share one rule set across environments so a rule is edited once instead of three "
+        L"times. Rules only: the connection is NEVER inherited, so a child still says for "
+        L"itself where it sends.");
+    addTip(hDlg, IDC_MLLP_HOST, L"Where this profile sends. Changing it changes only this profile.");
+    addTip(hDlg, IDC_MLLP_LISTENPORT,
+        L"The port this profile listens on. Switching profiles stops a running listener, "
+        L"because the port and bind address change under it.");
+    addTip(hDlg, IDC_MLLP_ALLOWNONLOOP,
+        L"This profile asks to bind a real interface. It is only half the permission: "
+        L"Plug-in Settings has to allow non-loopback binds as well, or this stays on loopback.");
+    addTip(hDlg, IDC_MLLP_BINDADDR,
+        L"The interface the listener binds. Falls back to 127.0.0.1 whenever either half of "
+        L"the opt-in is missing.");
+    addTip(hDlg, IDC_RULE_LIST,
+        L"Conformance rules checked by Check Conformance: max length, allowed values and "
+        L"required, per field. These are what a child profile inherits.");
+}
+
+// ── New Profile wizard ────────────────────────────────────────────────────
+//
+// Creating a profile used to mean typing a name into the combo and clicking New,
+// then hunting for six fields you had no reason to know existed. The facets are
+// the whole point of an endpoint profile, so they get asked for at the moment
+// they mean something, each with a sentence saying what it is for.
+//
+// One dialog template serves every step. Nothing is written until the last step,
+// so Cancel leaves no file behind.
+struct WizStep {
+    const wchar_t* title;
+    const wchar_t* help;
+    const wchar_t* label;
+    bool  combo;          // combo instead of the edit box
+    bool  optional;
+};
+
+const WizStep kWizSteps[] = {
+    { L"Name this profile",
+      L"A short name used for the file on disk, PipeHat.<name>.profile. Letters, digits, "
+      L"dash and underscore only. It is not what you will see in the picker -- that is built "
+      L"from the next few answers.",
+      L"Profile name:", false, false },
+    { L"Which clinical system?",
+      L"The system the data is about: Meditech, Exa, Epic, Cerner. This is one half of the "
+      L"interface and it groups the profile in the picker.",
+      L"Application:", false, true },
+    { L"Which interface engine?",
+      L"The engine this profile talks to: IRIS, BridgeLink, Rhapsody, Mirth. Usually the host "
+      L"you actually connect to.",
+      L"Engine:", false, true },
+    { L"Which message type?",
+      L"DFT, ADT, ORU, SIU. Used for grouping and for the profile's display name.",
+      L"Message type:", false, true },
+    { L"Which environment?",
+      L"Local, DEV, QA or PROD. This orders the picker so a promotion path reads top to bottom. "
+      L"PROD adds an extra confirmation before sending. It is a label and never grants access: "
+      L"binding a real interface still needs both opt-ins.",
+      L"Environment:", true, true },
+    { L"Inherit conformance rules?",
+      L"Pick a parent to share one rule set across environments, so a rule change is edited once "
+      L"instead of three times. Rules only -- the connection is never inherited, so this profile "
+      L"still says for itself where it sends.",
+      L"Inherit rules from:", true, true },
+    { L"Where does this endpoint live?",
+      L"The MLLP host and port this profile sends to. Leave the defaults for a local engine. "
+      L"You can change all of it later in Profile Settings.",
+      L"Send to host:port (e.g. 10.1.2.3:2575):", false, true },
+};
+constexpr int kWizStepCount = (int)(sizeof(kWizSteps) / sizeof(kWizSteps[0]));
+
+int          g_wizIndex = 0;
+std::wstring g_wizAnswers[kWizStepCount];
+
+void wizShowStep(HWND hDlg) {
+    const WizStep& st = kWizSteps[g_wizIndex];
+    SetDlgItemTextW(hDlg, IDC_WIZ_TITLE, st.title);
+    SetDlgItemTextW(hDlg, IDC_WIZ_HELP, st.help);
+    SetDlgItemTextW(hDlg, IDC_WIZ_LABEL, st.label);
+    SetDlgItemTextW(hDlg, IDC_WIZ_STEP,
+        (L"Step " + std::to_wstring(g_wizIndex + 1) + L" of " +
+         std::to_wstring(kWizStepCount)).c_str());
+
+    HWND hEdit  = GetDlgItem(hDlg, IDC_WIZ_EDIT);
+    HWND hCombo = GetDlgItem(hDlg, IDC_WIZ_COMBO);
+    ShowWindow(hEdit,  st.combo ? SW_HIDE : SW_SHOW);
+    ShowWindow(hCombo, st.combo ? SW_SHOW : SW_HIDE);
+
+    if (st.combo) {
+        SendMessageW(hCombo, CB_RESETCONTENT, 0, 0);
+        if (g_wizIndex == 4) {
+            SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)L"(unspecified)");
+            SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)L"Local");
+            SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)L"DEV");
+            SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)L"QA");
+            SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)L"PROD");
+        } else {
+            SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)L"(none)");
+            for (const auto& pr : enumerateProfiles())
+                if (pr != kDefaultDisplay)
+                    SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)pr.c_str());
+        }
+        selectComboText(hDlg, IDC_WIZ_COMBO, g_wizAnswers[g_wizIndex],
+                        g_wizIndex == 4 ? L"(unspecified)" : L"(none)");
+    } else {
+        SetDlgItemTextW(hDlg, IDC_WIZ_EDIT, g_wizAnswers[g_wizIndex].c_str());
+    }
+
+    EnableWindow(GetDlgItem(hDlg, IDC_WIZ_BACK), g_wizIndex > 0);
+    SetDlgItemTextW(hDlg, IDOK, g_wizIndex == kWizStepCount - 1 ? L"&Create" : L"&Next >");
+    SetFocus(st.combo ? hCombo : hEdit);
+}
+
+// The slug has to survive being a filename and the PipeHat.<name>.profile parse,
+// so a dot would break it. Rejected rather than silently stripped: a user who
+// typed one should find out here, not discover their profile is called something
+// else.
+bool wizValidName(HWND hDlg, const std::wstring& raw) {
+    if (raw.empty()) {
+        MessageBoxW(hDlg, L"Enter a name for the profile.", L"New Endpoint Profile",
+                    MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+    for (wchar_t ch : raw) {
+        if (!(iswalnum(ch) || ch == L'-' || ch == L'_')) {
+            MessageBoxW(hDlg,
+                L"Use letters, digits, dash or underscore only.\r\n\r\n"
+                L"A dot would break the PipeHat.<name>.profile filename.",
+                L"New Endpoint Profile", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+    }
+    if (raw == kDefaultDisplay) {
+        MessageBoxW(hDlg, L"That name is reserved for the default profile.",
+                    L"New Endpoint Profile", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    if (GetFileAttributesW(profilePathForDisplay(raw).c_str()) != INVALID_FILE_ATTRIBUTES) {
+        MessageBoxW(hDlg, L"A profile with that name already exists.",
+                    L"New Endpoint Profile", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    return true;
+}
+
+INT_PTR CALLBACK wizardProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM) {
+    switch (msg) {
+        case WM_INITDIALOG:
+            g_wizIndex = 0;
+            for (int i = 0; i < kWizStepCount; ++i) g_wizAnswers[i].clear();
+            wizShowStep(hDlg);
+            return FALSE;   // wizShowStep set the focus
+        case WM_COMMAND:
+            switch (LOWORD(wParam)) {
+                case IDC_WIZ_BACK:
+                    if (g_wizIndex > 0) { --g_wizIndex; wizShowStep(hDlg); }
+                    return TRUE;
+                case IDOK: {
+                    const WizStep& st = kWizSteps[g_wizIndex];
+                    std::wstring v = st.combo ? comboText(hDlg, IDC_WIZ_COMBO)
+                                              : getText(hDlg, IDC_WIZ_EDIT);
+                    if (v == L"(none)" || v == L"(unspecified)") v.clear();
+                    if (g_wizIndex == 0 && !wizValidName(hDlg, v)) return TRUE;
+                    g_wizAnswers[g_wizIndex] = v;
+
+                    if (g_wizIndex < kWizStepCount - 1) { ++g_wizIndex; wizShowStep(hDlg); return TRUE; }
+                    EndDialog(hDlg, IDOK);
+                    return TRUE;
+                }
+                case IDCANCEL:
+                    EndDialog(hDlg, IDCANCEL);
+                    return TRUE;
+            }
+            return FALSE;
+    }
+    return FALSE;
+}
+
+// Turn the collected answers into a profile file. Called only after the last
+// step, so a cancelled wizard leaves nothing on disk.
+bool wizCreateProfile(std::wstring& outSlug) {
+    outSlug = g_wizAnswers[0];
+    endpoint::Profile p;
+    p.meta.application = g_wizAnswers[1];
+    p.meta.engine      = g_wizAnswers[2];
+    p.meta.messageType = g_wizAnswers[3];
+    p.meta.environment = endpoint::parseEnvironment(g_wizAnswers[4]);
+    p.meta.inherits    = g_wizAnswers[5];
+
+    // "host:port", or just a host. A missing or unparseable port keeps the
+    // MllpConfig default rather than becoming something arbitrary.
+    const std::wstring hp = g_wizAnswers[6];
+    if (!hp.empty()) {
+        p.hasConnection = true;
+        const size_t colon = hp.rfind(L':');
+        if (colon == std::wstring::npos) {
+            p.conn.host = hp;
+        } else {
+            p.conn.host = hp.substr(0, colon);
+            const std::wstring portText = hp.substr(colon + 1);
+            int port = 0;
+            bool digits = !portText.empty();
+            for (wchar_t ch : portText) if (ch < L'0' || ch > L'9') { digits = false; break; }
+            if (digits) port = _wtoi(portText.c_str());
+            if (port > 0 && port <= 65535) { p.conn.sendPort = port; p.conn.listenPort = port; }
+        }
+        if (p.conn.host.empty()) p.conn.host = L"127.0.0.1";
+    }
+
+    p.rulesText = ConformanceProfile::defaultFileText();
+    const std::string bytes = wToUtf8(endpoint::serialize(p));
+    std::ofstream out(profilePathForDisplay(outSlug).c_str(), std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    out.write(bytes.data(), (std::streamsize)bytes.size());
+    return (bool)out;
+}
+
+// ── delete a profile ──
+//
+// Destructive and not undoable, so it names what it is about to remove and
+// checks who depends on it first. A profile that others inherit from is the
+// dangerous one: deleting it silently changes the rules every child resolves to.
+void deleteCurrentProfile(HWND hDlg) {
+    if (g_curDisplay.empty() || g_curDisplay == kDefaultDisplay) {
+        MessageBoxW(hDlg,
+            L"The default profile cannot be deleted.\r\n\r\n"
+            L"It is the fallback PipeHat loads when no other profile is selected.",
+            L"Delete Profile", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    std::vector<std::wstring> dependents;
+    for (const auto& other : enumerateProfiles()) {
+        if (other == kDefaultDisplay || other == g_curDisplay) continue;
+        std::wstring text;
+        if (!readProfileBySlug(other, text)) continue;
+        if (endpoint::parse(text).meta.inherits == g_curDisplay) dependents.push_back(other);
+    }
+
+    std::wstring msg = L"Delete profile '" + g_curDisplay + L"'?\r\n\r\n"
+                       L"This removes its file and cannot be undone.";
+    if (!dependents.empty()) {
+        msg += L"\r\n\r\nWARNING: these profiles inherit their rules from it and will lose "
+               L"those rules:\r\n";
+        for (const auto& d : dependents) msg += L"    " + d + L"\r\n";
+    }
+    if (MessageBoxW(hDlg, msg.c_str(), L"Delete Profile",
+                    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+        return;
+
+    const std::wstring path = profilePathForDisplay(g_curDisplay);
+    if (!DeleteFileW(path.c_str())) {
+        MessageBoxW(hDlg, L"Could not delete the profile file.", L"Delete Profile",
+                    MB_OK | MB_ICONERROR);
+        return;
+    }
+
+    // Whatever was on screen belonged to the file that is now gone.
+    g_dirty = false;
+    populateProfileCombo(hDlg);
+    switchToProfile(hDlg, kDefaultDisplay);
 }
 
 INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -593,16 +929,19 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
             s_hInst = (HINSTANCE)GetWindowLongPtrW(hDlg, GWLP_HINSTANCE);
             HWND hList = GetDlgItem(hDlg, IDC_RULE_LIST);
             initColumns(hList);
+            createTips(hDlg);
             populateProfileCombo(hDlg);
             std::wstring activeDisp = displayFromName(g_activeProfilePtr ? *g_activeProfilePtr : std::wstring());
-            switchToProfile(hDlg, activeDisp, false);   // also populates the endpoint section
-            populateGlobalMllp(hDlg);
-            updateBindAddrEnabled(hDlg);   // needs BOTH checkboxes populated first
+            switchToProfile(hDlg, activeDisp);   // also populates the endpoint section
+            refreshGlobalState(hDlg);
             // "Add rule from current field": jump straight into the rule editor.
             if (!g_seedSeg.empty() && g_seedField > 0)
                 PostMessageW(hDlg, WM_COMMAND, MAKEWPARAM(IDC_RULE_ADD, BN_CLICKED), 0);
             return TRUE;
         }
+        case WM_DESTROY:
+            if (g_tips) { DestroyWindow(g_tips); g_tips = nullptr; }
+            return FALSE;
         case WM_NOTIFY: {
             LPNMHDR nm = (LPNMHDR)lParam;
             // Double-click a rule row to edit it.
@@ -626,60 +965,72 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
                 if (sel >= 0) {
                     wchar_t b[128] = { 0 };
                     SendMessageW(c, CB_GETLBTEXT, sel, (LPARAM)b);
-                    switchToProfile(hDlg, b, true);
+                    if (confirmLeaveProfile(hDlg)) {
+                        switchToProfile(hDlg, b);
+                    } else {
+                        // The user cancelled, so put the combo back on the
+                        // profile that is actually loaded. Leaving it showing the
+                        // other name would be a lie about what is on screen.
+                        SetDlgItemTextW(hDlg, IDC_PROFILE, g_curDisplay.c_str());
+                    }
                 }
                 return TRUE;
             }
             if (HIWORD(wParam) == EN_CHANGE &&
                 (LOWORD(wParam) == IDC_MLLP_HOST || LOWORD(wParam) == IDC_MLLP_SENDPORT ||
                  LOWORD(wParam) == IDC_MLLP_LISTENPORT || LOWORD(wParam) == IDC_MLLP_BINDADDR)) {
-                if (!g_populating) g_connDirty = true;
+                if (!g_populating) { g_connDirty = true; g_dirty = true; }
                 return TRUE;
             }
             // Any facet edit changes what the profile will be called.
             if (HIWORD(wParam) == EN_CHANGE &&
                 (LOWORD(wParam) == IDC_EP_APPLICATION || LOWORD(wParam) == IDC_EP_ENGINE ||
-                 LOWORD(wParam) == IDC_EP_MSGTYPE     || LOWORD(wParam) == IDC_EP_DISPLAYNAME)) {
+                 LOWORD(wParam) == IDC_EP_MSGTYPE     || LOWORD(wParam) == IDC_EP_DISPLAYNAME ||
+                 LOWORD(wParam) == IDC_EP_DESCRIPTION)) {
+                if (!g_populating) g_dirty = true;
                 refreshDerivedName(hDlg);
                 return TRUE;
             }
             if (LOWORD(wParam) == IDC_EP_ENVIRONMENT && HIWORD(wParam) == CBN_SELCHANGE) {
+                if (!g_populating) g_dirty = true;
                 refreshDerivedName(hDlg);
                 return TRUE;
             }
             switch (LOWORD(wParam)) {
                 case IDC_PROFILE_NEW: {
-                    // Use the (editable) combo text as the new profile name.
-                    std::wstring raw = getText(hDlg, IDC_PROFILE);
-                    std::wstring name;
-                    for (wchar_t ch : raw)
-                        if (iswalnum(ch) || ch == L'-' || ch == L'_') name += ch;
-                    if (name.empty() || name == kDefaultDisplay) {
-                        MessageBoxW(hDlg,
-                            L"Type a profile name (letters, digits, - or _) then click New.",
-                            L"PipeHat Settings", MB_OK | MB_ICONINFORMATION);
+                    if (!confirmLeaveProfile(hDlg)) return TRUE;
+                    if (DialogBoxParamW(s_hInst, MAKEINTRESOURCEW(IDD_WIZARD), hDlg,
+                                        wizardProc, 0) != IDOK)
+                        return TRUE;
+                    std::wstring slug;
+                    if (!wizCreateProfile(slug)) {
+                        MessageBoxW(hDlg, L"Could not write the new profile file.",
+                                    L"New Endpoint Profile", MB_OK | MB_ICONERROR);
                         return TRUE;
                     }
-                    std::wstring path = profilePathForDisplay(name);
-                    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
-                        std::string bytes = wToUtf8(ConformanceProfile::defaultFileText());
-                        std::ofstream out(path.c_str(), std::ios::binary);
-                        if (out) out.write(bytes.data(), (std::streamsize)bytes.size());
-                    }
-                    switchToProfile(hDlg, name, true);   // save current, load the new one
                     populateProfileCombo(hDlg);
-                    SetDlgItemTextW(hDlg, IDC_PROFILE, name.c_str());
+                    switchToProfile(hDlg, slug);
                     return TRUE;
                 }
+                case IDC_PROFILE_DELETE:
+                    deleteCurrentProfile(hDlg);
+                    return TRUE;
                 case IDC_MLLP_ALLOWNONLOOP:
-                    if (!g_populating) g_connDirty = true;
-                    updateBindAddrEnabled(hDlg);
+                    if (!g_populating) { g_connDirty = true; g_dirty = true; }
+                    refreshGlobalState(hDlg);
                     return TRUE;
-                case IDC_MLLP_ALLOWGLOBAL:
-                    updateBindAddrEnabled(hDlg);   // global, not part of the profile
+                case IDC_OPEN_PLUGIN: {
+                    // Opened from here so the user does not have to find it, and
+                    // the state text refreshes the moment they come back.
+                    if (g_cfg) SettingsDialog::runPluginModal(s_hInst, hDlg, *g_cfg);
+                    refreshGlobalState(hDlg);
                     return TRUE;
+                }
                 case IDC_EP_INHERITS:
-                    if (HIWORD(wParam) == CBN_SELCHANGE) refreshDerivedName(hDlg);
+                    if (HIWORD(wParam) == CBN_SELCHANGE) {
+                        if (!g_populating) g_dirty = true;
+                        refreshDerivedName(hDlg);
+                    }
                     return TRUE;
                 case IDC_RULE_ADD:
                     g_editIndex = -1;
@@ -705,6 +1056,7 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
                     }
                     g_rules.erase(g_rules.begin() + sel);
                     populateList(hList);
+                    g_dirty = true;
                     return TRUE;
                 }
                 case IDOK:
@@ -714,11 +1066,10 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
                                     L"PipeHat Settings", MB_OK | MB_ICONERROR);
                         return TRUE;
                     }
-                    readGlobalMllp(hDlg);
                     // Hand the selected profile's connection back so the caller
                     // sends and listens where this profile says, without waiting
-                    // for a reload. The two global switches above are the only
-                    // other fields of cfg this dialog writes.
+                    // for a reload. The global switches are not touched here --
+                    // they belong to Plug-in Settings.
                     if (g_cfg) {
                         g_cfg->host             = g_ep.conn.host;
                         g_cfg->sendPort         = g_ep.conn.sendPort;
@@ -731,9 +1082,16 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
                         // collapse the two halves back into one.
                     }
                     if (g_activeProfilePtr) *g_activeProfilePtr = nameFromDisplay(g_curDisplay);
+                    g_dirty = false;
                     EndDialog(hDlg, IDOK);
                     return TRUE;
                 case IDCANCEL:
+                    if (g_dirty) {
+                        const int r = MessageBoxW(hDlg,
+                            L"Discard your unsaved changes to this profile?",
+                            L"PipeHat Profile Settings", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+                        if (r != IDYES) return TRUE;
+                    }
                     EndDialog(hDlg, IDCANCEL);
                     return TRUE;
             }
@@ -743,9 +1101,52 @@ INT_PTR CALLBACK settingsProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
     return FALSE;
 }
 
+// ── plug-in settings (a separate window on purpose) ──
+INT_PTR CALLBACK pluginProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM) {
+    switch (msg) {
+        case WM_INITDIALOG:
+            if (g_cfg) {
+                setChecked(hDlg, IDC_MLLP_ENABLE, g_cfg->enabled);
+                setChecked(hDlg, IDC_MLLP_SAVERECV, g_cfg->saveReceived);
+                // cfg->allowNonLoopback is the GLOBAL permission. The per-profile
+                // half lives in the profile file and is edited on the other
+                // screen; a bind needs both.
+                setChecked(hDlg, IDC_MLLP_ALLOWGLOBAL, g_cfg->allowNonLoopback);
+            }
+            return TRUE;
+        case WM_COMMAND:
+            switch (LOWORD(wParam)) {
+                case IDOK:
+                    if (g_cfg) {
+                        g_cfg->enabled = isChecked(hDlg, IDC_MLLP_ENABLE);
+                        g_cfg->saveReceived = isChecked(hDlg, IDC_MLLP_SAVERECV);
+                        g_cfg->allowNonLoopback = isChecked(hDlg, IDC_MLLP_ALLOWGLOBAL);
+                    }
+                    EndDialog(hDlg, IDOK);
+                    return TRUE;
+                case IDCANCEL:
+                    EndDialog(hDlg, IDCANCEL);
+                    return TRUE;
+            }
+            return FALSE;
+    }
+    return FALSE;
+}
+
 } // namespace
 
 namespace SettingsDialog {
+
+bool runPluginModal(HINSTANCE hInst, HWND hParent, MllpConfig& cfg) {
+    // Shares g_cfg with the profile dialog so that opening this one from there,
+    // via the Plug-in Settings button, edits the same struct and the profile
+    // screen can refresh its "global permission is ON/OFF" line on return.
+    MllpConfig* saved = g_cfg;
+    g_cfg = &cfg;
+    INT_PTR r = DialogBoxParamW(hInst, MAKEINTRESOURCEW(IDD_PLUGIN), hParent, pluginProc, 0);
+    g_cfg = saved;
+    return (r == IDOK);
+}
 
 bool runModal(HINSTANCE hInst, HWND hParent, const std::wstring& configDir,
               std::wstring& activeProfile, MllpConfig& cfg,
@@ -760,7 +1161,7 @@ bool runModal(HINSTANCE hInst, HWND hParent, const std::wstring& configDir,
 
     INITCOMMONCONTROLSEX icc;
     icc.dwSize = sizeof(icc);
-    icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES;
+    icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES | ICC_TAB_CLASSES;
     InitCommonControlsEx(&icc);
 
     INT_PTR r = DialogBoxParamW(hInst, MAKEINTRESOURCEW(IDD_SETTINGS), hParent, settingsProc, 0);

@@ -19,4 +19,11 @@ namespace SettingsDialog {
                   std::wstring& activeProfile, MllpConfig& cfg,
                   const std::wstring& seedSeg = std::wstring(), int seedField = 0,
                   const SegmentDB* segDb = nullptr);
+
+    // Plug-in settings: the switches that do NOT follow a profile -- the MLLP
+    // master switch, saving received messages to disk, and the global half of
+    // the non-loopback permission. A separate window on purpose, so none of
+    // them can be changed while the user believes they are editing a profile.
+    // Returns true if the user saved; the caller persists cfg.
+    bool runPluginModal(HINSTANCE hInst, HWND hParent, MllpConfig& cfg);
 }

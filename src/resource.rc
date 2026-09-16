@@ -17,17 +17,18 @@ END
 // is not cosmetic: the whole point of the endpoint profile is that selecting one
 // changes where you are pointed, and the user has to be able to see at a glance
 // which switches a profile change will and will not move.
-IDD_SETTINGS DIALOGEX 0, 0, 344, 458
+IDD_SETTINGS DIALOGEX 0, 0, 344, 396
 STYLE DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "PipeHat Settings"
+CAPTION "PipeHat Profile Settings"
 FONT 8, "MS Shell Dlg"
 BEGIN
     LTEXT           "Profile:", -1, 7, 9, 28, 10
-    COMBOBOX        IDC_PROFILE, 38, 7, 120, 160,
+    COMBOBOX        IDC_PROFILE, 38, 7, 110, 160,
                     CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
-    PUSHBUTTON      "&New", IDC_PROFILE_NEW, 162, 6, 34, 14
-    LTEXT           "", IDC_EP_DERIVED, 202, 9, 135, 10
-    LTEXT           "Rules for the selected profile. Switch or create per-interface profiles above.",
+    PUSHBUTTON      "&New...", IDC_PROFILE_NEW, 152, 6, 36, 14
+    PUSHBUTTON      "De&lete", IDC_PROFILE_DELETE, 192, 6, 36, 14
+    LTEXT           "", IDC_EP_DERIVED, 234, 9, 103, 10
+    LTEXT           "A profile is one interface: its conformance rules AND the address PipeHat sends to.",
                     -1, 7, 24, 330, 10
     CONTROL         "", IDC_RULE_LIST, "SysListView32",
                     LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP,
@@ -36,7 +37,7 @@ BEGIN
     PUSHBUTTON      "&Edit...", IDC_RULE_EDIT, 63, 136, 52, 14
     PUSHBUTTON      "&Remove", IDC_RULE_REMOVE, 119, 136, 52, 14
 
-    GROUPBOX        "Endpoint - these follow the selected profile", -1, 7, 156, 330, 180
+    GROUPBOX        "Endpoint - all of this follows the selected profile", -1, 7, 156, 330, 196
     LTEXT           "Application:", -1, 14, 172, 46, 10
     EDITTEXT        IDC_EP_APPLICATION, 62, 170, 90, 12, ES_AUTOHSCROLL
     LTEXT           "Engine:", -1, 162, 172, 32, 10
@@ -67,22 +68,15 @@ BEGIN
     EDITTEXT        IDC_MLLP_LISTENPORT, 70, 294, 40, 12, ES_NUMBER | ES_AUTOHSCROLL
     AUTOCHECKBOX    "Allow binding a non-loopback interface (exposes a receiver on your network)",
                     IDC_MLLP_ALLOWNONLOOP, 14, 310, 316, 10
-    LTEXT           "Bind address:", -1, 14, 324, 54, 10
-    EDITTEXT        IDC_MLLP_BINDADDR, 70, 322, 120, 12, ES_AUTOHSCROLL
+    LTEXT           "", IDC_GLOBAL_STATE, 24, 322, 210, 10
+    PUSHBUTTON      "Plug-in Settings...", IDC_OPEN_PLUGIN, 240, 320, 88, 14
+    LTEXT           "Bind address:", -1, 14, 338, 54, 10
+    EDITTEXT        IDC_MLLP_BINDADDR, 70, 336, 120, 12, ES_AUTOHSCROLL
 
-    GROUPBOX        "Global - these do NOT follow the profile", -1, 7, 342, 330, 76
-    AUTOCHECKBOX    "Enable MLLP networking (off by default)", IDC_MLLP_ENABLE, 14, 356, 200, 10
-    AUTOCHECKBOX    "Save received messages to disk (writes cleartext PHI - off by default)",
-                    IDC_MLLP_SAVERECV, 14, 370, 316, 10
-    AUTOCHECKBOX    "Permit non-loopback binds at all (a profile also has to ask for one)",
-                    IDC_MLLP_ALLOWGLOBAL, 14, 384, 316, 10
-    LTEXT           "Warning: MLLP is cleartext - PHI crosses the network unencrypted. Use loopback or a trusted network only.",
-                    -1, 14, 398, 316, 18
-
-    DEFPUSHBUTTON   "&Save", IDOK, 229, 422, 52, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 285, 422, 52, 14
-    LTEXT           "Saved in the Notepad++ plugin config folder (PipeHat[.name].profile / PipeHat.ini).",
-                    -1, 7, 442, 330, 10
+    DEFPUSHBUTTON   "&Save", IDOK, 229, 360, 52, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 285, 360, 52, 14
+    LTEXT           "One file per profile: PipeHat[.name].profile in the Notepad++ plugin config folder.",
+                    -1, 7, 380, 330, 10
 END
 
 // Dialog 3 (IDD_RULE) — add or edit a single conformance rule.
@@ -106,4 +100,61 @@ BEGIN
                     -1, 7, 110, 210, 10
     DEFPUSHBUTTON   "OK", IDOK, 111, 132, 50, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 167, 132, 50, 14
+END
+
+// Dialog 4 (IDD_WIZARD) - one step of the New Profile walkthrough.
+//
+// A single template is reused for every question: the title, the help paragraph
+// and the label are rewritten per step, and the step shows either the edit box
+// or the combo, never both. Seven .rc templates for seven questions would be
+// seven places to keep in sync for no gain.
+IDD_WIZARD DIALOGEX 0, 0, 280, 176
+STYLE DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "New Endpoint Profile"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT           "", IDC_WIZ_TITLE, 7, 7, 266, 10
+    LTEXT           "", IDC_WIZ_HELP, 7, 21, 266, 42
+    LTEXT           "", IDC_WIZ_LABEL, 7, 68, 266, 10
+    EDITTEXT        IDC_WIZ_EDIT, 7, 80, 266, 12, ES_AUTOHSCROLL
+    COMBOBOX        IDC_WIZ_COMBO, 7, 80, 266, 120,
+                    CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_WIZ_STEP, 7, 102, 120, 10
+    LTEXT           "Nothing is written until the last step. Cancel at any point leaves no file behind.",
+                    -1, 7, 120, 266, 18
+    PUSHBUTTON      "< &Back", IDC_WIZ_BACK, 108, 152, 52, 14
+    DEFPUSHBUTTON   "&Next >", IDOK, 164, 152, 52, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 220, 152, 52, 14
+END
+
+// Dialog 5 (IDD_PLUGIN) - plug-in settings.
+//
+// Deliberately a separate window from Profile Settings. These three switches are
+// the ones a profile must never be able to flip, so putting them behind their own
+// window makes that a structural fact rather than a groupbox caption: you cannot
+// change one of these while believing you are editing a profile.
+IDD_PLUGIN DIALOGEX 0, 0, 300, 176
+STYLE DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "PipeHat Plug-in Settings"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT           "These apply to PipeHat as a whole. Selecting a different profile never changes them.",
+                    -1, 7, 7, 286, 18
+
+    GROUPBOX        "MLLP networking", -1, 7, 30, 286, 96
+    AUTOCHECKBOX    "Enable MLLP networking", IDC_MLLP_ENABLE, 14, 44, 200, 10
+    LTEXT           "Off by default. While this is off PipeHat opens no sockets at all.",
+                    -1, 24, 56, 262, 10
+    AUTOCHECKBOX    "Save received messages to disk", IDC_MLLP_SAVERECV, 14, 70, 200, 10
+    LTEXT           "Writes inbound messages unencrypted under %LOCALAPPDATA%\\PipeHat\\received.",
+                    -1, 24, 82, 262, 10
+    AUTOCHECKBOX    "Permit non-loopback binds", IDC_MLLP_ALLOWGLOBAL, 14, 96, 200, 10
+    LTEXT           "Permission only. A profile must ALSO ask for one before anything binds.",
+                    -1, 24, 108, 262, 10
+
+    LTEXT           "Warning: MLLP is cleartext. PHI crosses the network unencrypted. Use loopback or a trusted network only.",
+                    -1, 7, 132, 286, 18
+
+    DEFPUSHBUTTON   "&Save", IDOK, 185, 154, 52, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 241, 154, 52, 14
 END

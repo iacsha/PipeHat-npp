@@ -167,7 +167,7 @@ static int g_healCount = 0;
 
 // Menu items + their keyboard shortcuts. ShortcutKey objects must outlive
 // getFuncsArray (Notepad++ keeps the pointers), so they are static.
-static FuncItem g_funcItems[27];   // exactly sized -- bump when adding a menu item
+static FuncItem g_funcItems[28];   // exactly sized -- bump when adding a menu item
 static int g_nbFuncItems = 0;
 static ShortcutKey g_skScrub;
 static ShortcutKey g_skTree;
@@ -181,6 +181,7 @@ static ShortcutKey g_skValidate;
 static ShortcutKey g_skCompare;
 static ShortcutKey g_skSettings;
 static ShortcutKey g_skSwitchProfile;
+static ShortcutKey g_skPluginSettings;
 static ShortcutKey g_skMllpSend;
 static ShortcutKey g_skMllpReplay;
 static ShortcutKey g_skMllpListen;
@@ -1190,8 +1191,36 @@ static void cmdSwitchProfile() {
         switchActiveProfile(entries[pick - 1].slug);
 }
 
-// Open the settings GUI (conformance-rule editor + MLLP + profiles). On save we
-// reload the active profile so Check Conformance reflects edits without a restart.
+// Plug-in settings: the switches that do NOT follow a profile. A separate window
+// from Profile Settings on purpose -- none of these may be changed while the user
+// believes they are editing a profile.
+static void cmdPluginSettings() {
+    if (SettingsDialog::runPluginModal((HINSTANCE)g_hModule, g_nppData._nppHandle, g_mllp)) {
+        // cfg.allowNonLoopback is the global permission here. Capture it before
+        // loadProfile, which overwrites g_mllp.allowNonLoopback with the ANDed
+        // result of this and the active profile's own flag.
+        g_mllpAllowNonLoopbackGlobal = g_mllp.allowNonLoopback;
+
+        const std::wstring beforeBind   = g_mllp.effectiveBindAddr();
+        const int          beforeListen = g_mllp.listenPort;
+        loadProfile();
+        saveMllpConfig();
+
+        // Clearing the global permission narrows where the listener may bind, so
+        // it has to reach a listener that is already up -- otherwise switching the
+        // opt-in off visibly does nothing.
+        if (g_listener.running() &&
+            (!g_mllp.enabled || g_mllp.listenPort != beforeListen ||
+             g_mllp.effectiveBindAddr() != beforeBind)) {
+            g_listener.stop();
+            updateListenerCheck();
+            logEvent(L"Plugin", L"Listener stopped -- plug-in settings changed the bind target");
+        }
+    }
+}
+
+// Open Profile Settings (endpoint facets, connection, conformance rules). On save
+// we reload the active profile so Check Conformance reflects edits without a restart.
 static void cmdSettings() {
     std::wstring dir = configDirW();
     if (dir.empty()) {
@@ -2957,6 +2986,7 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_skCompare    = { true, true, true, 'D' };             // Ctrl+Alt+Shift+D  -- compare the two views
     g_skSettings   = { true, true, true, 'P' };             // Ctrl+Alt+Shift+P  -- settings
     g_skSwitchProfile = { true, true, true, 'B' };        // Ctrl+Alt+Shift+B  -- switch endpoint profile
+    g_skPluginSettings = { true, true, true, 'I' };       // Ctrl+Alt+Shift+I  -- plug-in settings
     g_skMllpSend   = { true, true, true, 'M' };             // Ctrl+Alt+Shift+M  -- MLLP send message
     g_skMllpReplay = { true, true, true, 'Y' };             // Ctrl+Alt+Shift+Y  -- replay all messages
     g_skMllpListen = { true, true, true, 'L' };             // Ctrl+Alt+Shift+L  -- MLLP listener toggle
@@ -3061,11 +3091,18 @@ extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* nbF) {
     g_funcItems[g_nbFuncItems]._pShKey = &g_skFold;
     g_nbFuncItems++;
 
-    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Settings\x2026");
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Profile Settings\x2026");
     g_funcItems[g_nbFuncItems]._pFunc = cmdSettings;
     g_funcItems[g_nbFuncItems]._cmdID = 0;
     g_funcItems[g_nbFuncItems]._init2Check = false;
     g_funcItems[g_nbFuncItems]._pShKey = &g_skSettings;
+    g_nbFuncItems++;
+
+    wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Plug-in Settings\x2026");
+    g_funcItems[g_nbFuncItems]._pFunc = cmdPluginSettings;
+    g_funcItems[g_nbFuncItems]._cmdID = 0;
+    g_funcItems[g_nbFuncItems]._init2Check = false;
+    g_funcItems[g_nbFuncItems]._pShKey = &g_skPluginSettings;
     g_nbFuncItems++;
 
     wcscpy_s(g_funcItems[g_nbFuncItems]._itemName, L"Switch Endpoint Profile\x2026");

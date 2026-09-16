@@ -4,7 +4,7 @@ project: PipeHat
 effort: E3
 effort_source: classifier
 phase: verify
-progress: 80/103
+progress: 83/120
 mode: interactive
 started: 2026-08-25T13:12:03Z
 updated: 2026-09-15T00:00:00Z
@@ -210,6 +210,26 @@ from the menu, and blocked from being sent over MLLP without confirmation.
 - [ ] ISC-102: Anti: clicking the last field of a segment navigates to that segment's line
 - [ ] ISC-103: Anti: a 480-message batch stops expanding at `valueNodeBudget` rather than stalling
 
+### Settings split, delete, wizard
+
+- [x] ISC-104: Settings is two windows: Profile Settings and Plug-in Settings
+- [x] ISC-105: Anti: the profile window contains no control that writes a global switch
+- [ ] ISC-106: Anti: changing the profile dropdown writes nothing to disk
+- [ ] ISC-107: Leaving a profile with unsaved edits prompts Save / Discard / Cancel
+- [ ] ISC-108: Cancel on that prompt restores the combo to the profile actually loaded
+- [ ] ISC-109: Cancel on the dialog with unsaved edits asks before discarding
+- [ ] ISC-110: Delete names the profile and requires confirmation
+- [ ] ISC-111: Anti: Delete refuses to remove the default profile
+- [ ] ISC-112: Delete warns and lists profiles that inherit from the target
+- [ ] ISC-113: Deleting the active profile falls back to the default
+- [ ] ISC-114: New runs a seven-step wizard and writes nothing until the last step
+- [ ] ISC-115: Anti: the wizard rejects a profile name containing a dot
+- [ ] ISC-116: Anti: the wizard rejects a name that already exists
+- [ ] ISC-117: The profile window states whether the global non-loopback permission is on
+- [ ] ISC-118: The Plug-in Settings button opens that window and the state line refreshes
+- [ ] ISC-119: Clearing the global permission stops a running listener
+- [x] ISC-120: Tooltips explain application, engine, environment, inherits and the bind opt-in
+
 ## Test Strategy
 
 | isc | type | check | threshold | tool |
@@ -235,6 +255,9 @@ from the menu, and blocked from being sent over MLLP without confirmation.
 | ISC-84 | static | rectangle sweep over every IDD_SETTINGS control | zero overlaps, zero out of bounds | layout checker script |
 | ISC-85..98 | unit | field splitting, naming, caps, escapes | 49 assertions, exit 0 | `tests/FieldTreeTest.exe` |
 | ISC-99..103 | manual | open a PID with repeats, an MSH, and a 480-message batch | subtree correct, no stall | Notepad++ debug session |
+| ISC-104..105 | static | control inventory per dialog template | no global control in IDD_SETTINGS | `rg` over resource.rc |
+| ISC-106..119 | manual | browse, edit, switch, cancel, delete, create | prompts fire, nothing written early | Notepad++ debug session |
+| ISC-120 | manual | hover each endpoint field | tooltip appears and wraps | Notepad++ debug session |
 | ISC-76..77 | manual | upgrade over an existing PipeHat.ini, then restart twice | written once, not twice | Notepad++ debug session |
 | all | build | full plugin compiles | zero errors | `cmake --build build --config Release` |
 | all | build | both standalone tests under MSVC | exit 0, /W4 clean | `cmd /c tests\runtests.bat` |
