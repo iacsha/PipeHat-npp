@@ -4,7 +4,7 @@ project: PipeHat
 effort: E3
 effort_source: classifier
 phase: verify
-progress: 79/103
+progress: 80/103
 mode: interactive
 started: 2026-08-25T13:12:03Z
 updated: 2026-09-15T00:00:00Z
@@ -180,7 +180,7 @@ from the menu, and blocked from being sent over MLLP without confirmation.
 - [ ] ISC-75: `Switch Endpoint Profile` appears in the menu and groups entries by application/engine/type
 - [ ] ISC-76: Migration writes the old global `[MLLP]` values into a profile that has no `[Connection]`
 - [ ] ISC-77: Anti: migration does not re-run against a profile that already has a `[Connection]`
-- [ ] ISC-78: The full plugin compiles with zero errors on MSVC
+- [x] ISC-78: The full plugin compiles with zero errors on MSVC
 - [x] ISC-79: Anti: the migration runs at most once per session, never on a profile switch
 - [ ] ISC-80: Anti: switching to a connection-less profile does not inherit the outgoing host/ports
 - [ ] ISC-81: Editing the active profile's listenPort or bindAddr in Settings stops the listener
@@ -237,6 +237,7 @@ from the menu, and blocked from being sent over MLLP without confirmation.
 | ISC-99..103 | manual | open a PID with repeats, an MSH, and a 480-message batch | subtree correct, no stall | Notepad++ debug session |
 | ISC-76..77 | manual | upgrade over an existing PipeHat.ini, then restart twice | written once, not twice | Notepad++ debug session |
 | all | build | full plugin compiles | zero errors | `cmake --build build --config Release` |
+| all | build | both standalone tests under MSVC | exit 0, /W4 clean | `cmd /c tests\runtests.bat` |
 
 ## Features
 
@@ -336,6 +337,12 @@ from the menu, and blocked from being sent over MLLP without confirmation.
   `(LPARAM)(fieldIdx)` where every other node passes `line + 1`, so clicking the last field of a
   segment navigated to whichever line shared that number. The two emit paths are now one lambda so
   they cannot drift again.
+
+- **2026-09-16T00:00:00Z** The build box is `dell`, not the work PC. The work PC has no C++
+  toolchain at all -- no Visual Studio, no vswhere, no cmake -- so it can run PipeHat but cannot
+  produce it. `dell` carries VS 2022 BuildTools, cmake on PATH, and the original
+  `C:\opencode\hl7-npp-plugin` tree. `tests/runtests.bat` was added so the MSVC half of the test
+  run is one command rather than a PowerShell quoting exercise.
 
 ## Verification
 
