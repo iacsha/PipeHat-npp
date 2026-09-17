@@ -4,7 +4,7 @@ project: PipeHat
 effort: E3
 effort_source: classifier
 phase: verify
-progress: 83/120
+progress: 89/132
 mode: interactive
 started: 2026-08-25T13:12:03Z
 updated: 2026-09-15T00:00:00Z
@@ -230,6 +230,21 @@ from the menu, and blocked from being sent over MLLP without confirmation.
 - [ ] ISC-119: Clearing the global permission stops a running listener
 - [x] ISC-120: Tooltips explain application, engine, environment, inherits and the bind opt-in
 
+### Click a tree node, select that piece
+
+- [x] ISC-121: `hl7tree::Node` carries an offset and length relative to the field text
+- [x] ISC-122: Slicing the field by a repetition's range returns that repetition
+- [x] ISC-123: Slicing by a component's range returns that component
+- [x] ISC-124: Slicing by a subcomponent's range returns that subcomponent
+- [x] ISC-125: An empty component reports zero length and its would-be start position
+- [x] ISC-126: Anti: the truncation summary node claims no range (offset -1)
+- [ ] ISC-127: Clicking a component node selects exactly that component in the editor
+- [ ] ISC-128: Clicking a subcomponent node selects exactly that subcomponent
+- [ ] ISC-129: Clicking a field node selects the whole field
+- [ ] ISC-130: Clicking a segment node selects the whole line
+- [ ] ISC-131: Anti: selection stays correct on a line containing a non-ASCII character
+- [ ] ISC-132: Clicking a node inside a folded segment unfolds it first
+
 ## Test Strategy
 
 | isc | type | check | threshold | tool |
@@ -258,6 +273,8 @@ from the menu, and blocked from being sent over MLLP without confirmation.
 | ISC-104..105 | static | control inventory per dialog template | no global control in IDD_SETTINGS | `rg` over resource.rc |
 | ISC-106..119 | manual | browse, edit, switch, cancel, delete, create | prompts fire, nothing written early | Notepad++ debug session |
 | ISC-120 | manual | hover each endpoint field | tooltip appears and wraps | Notepad++ debug session |
+| ISC-121..126 | unit | ranges re-slice the source field | exact string equality | `tests/FieldTreeTest.exe` |
+| ISC-127..132 | manual | click each node depth in the panel | selection matches the node | Notepad++ debug session |
 | ISC-76..77 | manual | upgrade over an existing PipeHat.ini, then restart twice | written once, not twice | Notepad++ debug session |
 | all | build | full plugin compiles | zero errors | `cmake --build build --config Release` |
 | all | build | both standalone tests under MSVC | exit 0, /W4 clean | `cmd /c tests\runtests.bat` |
@@ -366,6 +383,17 @@ from the menu, and blocked from being sent over MLLP without confirmation.
   produce it. `dell` carries VS 2022 BuildTools, cmake on PATH, and the original
   `C:\opencode\hl7-npp-plugin` tree. `tests/runtests.bat` was added so the MSVC half of the test
   run is one command rather than a PowerShell quoting exercise.
+
+- **2026-09-17T00:00:00Z** Tree nodes carry a document range rather than a line number. A node used
+  to store only `line + 1`, so clicking `OBX-5.3.3` did `SCI_GOTOLINE` and left the reader on the
+  right line with no indication which piece they had asked about. `MessageTreeView::m_targets` holds
+  a range per node and `lParam` indexes it, with 0 reserved for "no target" so it stays
+  distinguishable from the first entry.
+- **2026-09-17T00:00:00Z** Ranges are measured in `wchar_t` and converted to bytes at click time
+  against the line's own text, via `SciUtils::utf8Len`. Scintilla addresses bytes; counting
+  characters works until a message carries an accented name, and then every position after it is
+  silently wrong. `SCI_SETSEL` and `SCI_ENSUREVISIBLE` had to be added to the stripped vendored
+  `Scintilla.h`, per the standing rule for new Scintilla messages.
 
 ## Verification
 

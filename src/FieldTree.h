@@ -32,6 +32,13 @@ struct Node {
     std::wstring label;              // relative to the parent: "[2]", ".3 City", ".1.2"
     std::wstring value;              // raw text of this piece
     std::vector<Node> children;
+
+    // Where this piece sits inside the FIELD's text, in wchar_t units. The caller
+    // adds the field's own offset to get a position in the line, converts to
+    // bytes, and selects it. -1 means "no range of its own" -- the summary node
+    // that stands in for truncated siblings is the only one.
+    int offset = -1;
+    int length = 0;
 };
 
 // A field with a great many repetitions (a batch OBX, a long allergy list)
@@ -45,13 +52,21 @@ namespace detail {
 // Split on `sep`, keeping empty pieces. Empty pieces are the point: in
 // `123 MAIN ST^^ROCHESTER^NY` the reader needs to see that component 2 is empty
 // and that ROCHESTER is component 3, not component 2.
-inline std::vector<std::wstring> split(const std::wstring& s, wchar_t sep) {
-    std::vector<std::wstring> out;
+struct Piece {
+    std::wstring text;
+    int offset = 0;   // where text starts inside the string that was split
+};
+
+inline std::vector<Piece> split(const std::wstring& s, wchar_t sep) {
+    std::vector<Piece> out;
     size_t start = 0;
     for (;;) {
         size_t p = s.find(sep, start);
-        if (p == std::wstring::npos) { out.push_back(s.substr(start)); break; }
-        out.push_back(s.substr(start, p - start));
+        if (p == std::wstring::npos) {
+            out.push_back(Piece{ s.substr(start), (int)start });
+            break;
+        }
+        out.push_back(Piece{ s.substr(start, p - start), (int)start });
         start = p + 1;
     }
     return out;
@@ -72,17 +87,19 @@ inline std::wstring truncatedNode(size_t remaining) {
 
 // Subcomponents of one component. Returns empty when there is nothing to show.
 inline std::vector<Node> subcomponents(const std::wstring& comp, const Delims& d,
-                                       int componentNo) {
+                                       int componentNo, int base) {
     std::vector<Node> out;
-    std::vector<std::wstring> parts = split(comp, d.sub);
+    std::vector<Piece> parts = split(comp, d.sub);
     if (parts.size() <= 1) return out;          // no subcomponent separator present
 
     const size_t shown = parts.size() > (size_t)kMaxSiblings ? (size_t)kMaxSiblings : parts.size();
     for (size_t i = 0; i < shown; ++i) {
         Node n;
         n.label = L"." + std::to_wstring(componentNo) + L"." + std::to_wstring((int)i + 1) +
-                  preview(parts[i]);
-        n.value = parts[i];
+                  preview(parts[i].text);
+        n.value  = parts[i].text;
+        n.offset = base + parts[i].offset;
+        n.length = (int)parts[i].text.size();
         out.push_back(n);
     }
     if (shown < parts.size()) {
@@ -94,13 +111,13 @@ inline std::vector<Node> subcomponents(const std::wstring& comp, const Delims& d
 
 // Components of one repetition. dataType names them where the table knows it.
 inline std::vector<Node> components(const std::wstring& rep, const Delims& d,
-                                    const std::wstring& dataType) {
+                                    const std::wstring& dataType, int base) {
     std::vector<Node> out;
-    std::vector<std::wstring> parts = split(rep, d.comp);
+    std::vector<Piece> parts = split(rep, d.comp);
     if (parts.size() <= 1) {
         // A single component with subcomponents still has structure worth
         // showing: `A&B` under a field is two subcomponents of component 1.
-        return subcomponents(parts.empty() ? std::wstring() : parts[0], d, 1);
+        return subcomponents(parts.empty() ? std::wstring() : parts[0].text, d, 1, base);
     }
 
     const size_t shown = parts.size() > (size_t)kMaxSiblings ? (size_t)kMaxSiblings : parts.size();
@@ -110,9 +127,11 @@ inline std::vector<Node> components(const std::wstring& rep, const Delims& d,
         n.label = L"." + std::to_wstring(no);
         const std::wstring name = hl7dt::componentName(dataType, no);
         if (!name.empty()) n.label += L" " + name;
-        n.label += preview(parts[i]);
-        n.value = parts[i];
-        n.children = subcomponents(parts[i], d, no);
+        n.label += preview(parts[i].text);
+        n.value    = parts[i].text;
+        n.offset   = base + parts[i].offset;
+        n.length   = (int)parts[i].text.size();
+        n.children = subcomponents(parts[i].text, d, no, n.offset);
         out.push_back(n);
     }
     if (shown < parts.size()) {
@@ -137,16 +156,18 @@ inline std::vector<Node> buildFieldChildren(const std::wstring& fieldText,
     std::vector<Node> out;
     if (fieldText.empty()) return out;
 
-    std::vector<std::wstring> reps = detail::split(fieldText, d.repeat);
+    std::vector<detail::Piece> reps = detail::split(fieldText, d.repeat);
     if (reps.size() <= 1)
-        return detail::components(fieldText, d, dataType);
+        return detail::components(fieldText, d, dataType, 0);
 
     const size_t shown = reps.size() > (size_t)kMaxSiblings ? (size_t)kMaxSiblings : reps.size();
     for (size_t i = 0; i < shown; ++i) {
         Node n;
-        n.label = L"[" + std::to_wstring((int)i + 1) + L"]" + detail::preview(reps[i]);
-        n.value = reps[i];
-        n.children = detail::components(reps[i], d, dataType);
+        n.label    = L"[" + std::to_wstring((int)i + 1) + L"]" + detail::preview(reps[i].text);
+        n.value    = reps[i].text;
+        n.offset   = reps[i].offset;
+        n.length   = (int)reps[i].text.size();
+        n.children = detail::components(reps[i].text, d, dataType, n.offset);
         out.push_back(n);
     }
     if (shown < reps.size()) {

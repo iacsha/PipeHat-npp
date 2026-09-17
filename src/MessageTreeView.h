@@ -51,10 +51,28 @@ private:
                              HTREEITEM parent = TVI_ROOT);
     HTREEITEM addMessageNode(const std::wstring& text, LPARAM lparam);
     HTREEITEM addFieldNode(HTREEITEM parent, const std::wstring& text, int lineNum, int fieldIdx, LPARAM lparam);
+
+    // What a tree node points at in the document. Clicking a node used to do
+    // nothing but SCI_GOTOLINE, because a node carried only its line number --
+    // so clicking OBX-5.3.3 landed you on the OBX line with no indication of
+    // which part you had asked about. Each node now owns a range instead.
+    //
+    // startCol and length are in wchar_t units within the line; Scintilla
+    // addresses bytes, so onTreeClick converts before selecting. A length of 0
+    // means "no range, just go to the line".
+    struct NodeTarget {
+        int line = 0;
+        int startCol = 0;
+        int length = 0;
+    };
+    std::vector<NodeTarget> m_targets;   // lParam is an index into this, plus 1
+
+    // Record a target and return the lParam that addresses it.
+    LPARAM makeTarget(int line, int startCol, int length);
     // Repetition / component / subcomponent nodes under a field. Recursive, so
     // one call hangs the whole subtree.
-    void addValueNodes(HTREEITEM parent, const std::vector<hl7tree::Node>& nodes, LPARAM lparam,
-                       int& budget);
+    void addValueNodes(HTREEITEM parent, const std::vector<hl7tree::Node>& nodes,
+                       int line, int fieldStart, int& budget);
 
     static INT_PTR CALLBACK dlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
     static MessageTreeView* s_instance; // singleton for static callback

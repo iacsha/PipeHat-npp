@@ -60,6 +60,8 @@ typedef sptr_t (*SciFnDirect)(sptr_t ptr, unsigned int iMessage, uptr_t wParam, 
 #define SCI_GOTOPOS 2025
 #define SCI_GOTOLINE 2024
 #define SCI_SCROLLCARET 2169
+#define SCI_SETSEL 2160
+#define SCI_ENSUREVISIBLE 2232
 
 // Read-only
 #define SCI_SETREADONLY 2171

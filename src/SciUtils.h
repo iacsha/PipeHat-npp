@@ -41,6 +41,18 @@ inline std::wstring utf8ToW(const std::string& bytes) {
 }
 
 // A document line as a wide string with trailing CR/LF removed (empty on any error).
+// Byte length of a wide string once encoded as UTF-8.
+//
+// Scintilla addresses everything in BYTES while this plugin walks lines as
+// wchar_t, so any wchar offset handed back to Scintilla has to be converted
+// first. Counting characters instead works right up until a message carries an
+// accented name, and then every position past it is silently wrong.
+inline int utf8Len(const std::wstring& w) {
+    if (w.empty()) return 0;
+    return WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
+                               nullptr, 0, nullptr, nullptr);
+}
+
 inline std::wstring getLineW(SciFnDirect fn, sptr_t ptr, int line) {
     return utf8ToW(getLineUtf8(fn, ptr, line));
 }

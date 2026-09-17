@@ -62,7 +62,15 @@ void MessageTreeView::hide() {
     }
 }
 
+// lParam 0 means "no target", which is how a node with nothing to select is
+// distinguished from one pointing at the first entry.
+LPARAM MessageTreeView::makeTarget(int line, int startCol, int length) {
+    m_targets.push_back(NodeTarget{ line, startCol, length });
+    return (LPARAM)m_targets.size();
+}
+
 void MessageTreeView::clearTree() {
+    m_targets.clear();
     if (m_hTree) {
         SendMessageW(m_hTree, TVM_DELETEITEM, 0, (LPARAM)TVI_ROOT);
     }
@@ -113,12 +121,18 @@ HTREEITEM MessageTreeView::addFieldNode(HTREEITEM parent, const std::wstring& te
 // analyzeCaretField computes in main.cpp; the line is the honest answer until
 // that is plumbed through.
 void MessageTreeView::addValueNodes(HTREEITEM parent, const std::vector<hl7tree::Node>& nodes,
-                                    LPARAM lparam, int& budget) {
+                                    int line, int fieldStart, int& budget) {
     for (const auto& n : nodes) {
         if (budget <= 0) return;
         --budget;
-        HTREEITEM h = addFieldNode(parent, n.label, 0, 0, lparam);
-        if (!n.children.empty()) addValueNodes(h, n.children, lparam, budget);
+        // offset is relative to the field's text, so the field's own start is
+        // added here. offset -1 is the truncation summary, which describes no
+        // single piece and falls back to selecting nothing.
+        const LPARAM lp = (n.offset >= 0)
+            ? makeTarget(line, fieldStart + n.offset, n.length)
+            : makeTarget(line, 0, 0);
+        HTREEITEM h = addFieldNode(parent, n.label, 0, 0, lp);
+        if (!n.children.empty()) addValueNodes(h, n.children, line, fieldStart, budget);
     }
 }
 
@@ -182,7 +196,7 @@ void MessageTreeView::refresh(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrD
                                    + L"  " + (s->type.empty() ? L"(no MSH-9)" : s->type);
                 if (!s->controlId.empty()) label += L"  [" + s->controlId + L"]";
                 if (!decoded.empty()) label += L"  \x21D2 " + decoded; // ⇒
-                msgParent = addMessageNode(label, (LPARAM)(s->startLine + 1));
+                msgParent = addMessageNode(label, makeTarget(s->startLine, 0, 0));
                 curMsg = mi;
             }
         }
@@ -195,7 +209,9 @@ void MessageTreeView::refresh(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrD
             segLabel = segId + L" \x25B6 (unknown)";
         }
 
-        HTREEITEM segNode = addSegmentNode(segLabel, li, (LPARAM)(li + 1), msgParent);
+        // A segment node selects its whole line: the node IS the segment.
+        HTREEITEM segNode = addSegmentNode(segLabel, li,
+                                           makeTarget(li, 0, (int)wlStr.size()), msgParent);
 
         // Tokenize to find fields
         std::vector<HL7Token> tokens;
@@ -223,7 +239,7 @@ void MessageTreeView::refresh(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrD
         // drift apart; they already had, and the end-of-line copy was passing the
         // field number where every other node passes line+1, so clicking the last
         // field of a segment jumped to whatever line happened to share that number.
-        auto emitField = [&](std::wstring raw) {
+        auto emitField = [&](std::wstring raw, int fieldStart) {
             // getLineW returns the line's own terminator, so the LAST field on a
             // line carries a trailing CR/LF. Left in, it becomes a stray glyph in
             // the label and a phantom character in the final subcomponent.
@@ -244,7 +260,8 @@ void MessageTreeView::refresh(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrD
                 dl.fieldSep, dl.compSep);
             if (!decoded.empty()) flabel += L"  \x21D2 " + decoded; // ⇒
 
-            HTREEITEM fieldNode = addFieldNode(segNode, flabel, li, fieldIdx, (LPARAM)(li + 1));
+            HTREEITEM fieldNode = addFieldNode(segNode, flabel, li, fieldIdx,
+                                               makeTarget(li, fieldStart, (int)raw.size()));
 
             // MSH-2 IS the encoding characters (`^~\&`), the one place in a message
             // where delimiter characters are data. Splitting it would render the
@@ -253,14 +270,14 @@ void MessageTreeView::refresh(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrD
 
             const std::wstring dataType = fd ? fd->dataType : std::wstring();
             addValueNodes(fieldNode, hl7tree::buildFieldChildren(raw, treeDelims, dataType),
-                          (LPARAM)(li + 1), valueNodeBudget);
+                          li, fieldStart, valueNodeBudget);
         };
 
         for (const auto& tok : tokens) {
             if (tok.type != HL7TokenType::FIELD_SEP) continue;
             if (fieldIdx >= 1 && valStart >= 0 && tok.startPos > valStart) {
                 std::wstring raw = wlStr.substr((size_t)valStart, (size_t)(tok.startPos - valStart));
-                if (!raw.empty()) emitField(raw);
+                if (!raw.empty()) emitField(raw, valStart);
             }
             valStart = tok.startPos + tok.length;
             fieldIdx++;
@@ -268,7 +285,7 @@ void MessageTreeView::refresh(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrD
         // Emit the last field, which has no separator after it.
         if (fieldIdx >= 1 && valStart >= 0 && valStart < wlLen) {
             std::wstring raw = wlStr.substr((size_t)valStart);
-            if (!raw.empty()) emitField(raw);
+            if (!raw.empty()) emitField(raw, valStart);
         }
     }
 }
@@ -285,7 +302,9 @@ void MessageTreeView::onTreeClick(LPARAM lParam) {
     item.mask = TVIF_PARAM;
     SendMessageW(m_hTree, TVM_GETITEMW, 0, (LPARAM)&item);
 
-    int lineNumber = (int)item.lParam;
+    const size_t idx = (size_t)item.lParam;
+    if (idx == 0 || idx > m_targets.size()) return;
+    const NodeTarget t = m_targets[idx - 1];
 
     // Navigate to the line in the editor
     HWND hSci = GetFocus(); // Fallback
@@ -301,8 +320,27 @@ void MessageTreeView::onTreeClick(LPARAM lParam) {
         SciFnDirect fn = (SciFnDirect)SendMessage(hSci, SCI_GETDIRECTFUNCTION, 0, 0);
         sptr_t ptr = (sptr_t)SendMessage(hSci, SCI_GETDIRECTPOINTER, 0, 0);
         if (fn) {
-            // lParam stores line+1 (so 0 can mean "no line"); SCI_GOTOLINE is 0-based.
-            fn(ptr, SCI_GOTOLINE, lineNumber - 1, 0);
+            fn(ptr, SCI_ENSUREVISIBLE, t.line, 0);   // unfold the segment if folded
+            fn(ptr, SCI_GOTOLINE, t.line, 0);
+
+            if (t.length > 0 || t.startCol > 0) {
+                // Scintilla addresses BYTES and the tree measured wchar_t, so the
+                // column and length are re-measured as UTF-8 against this line's
+                // own text. Counting characters instead works until a message
+                // carries an accented name, and then every position past it is
+                // silently wrong.
+                const std::wstring line = getLineW(fn, ptr, t.line);
+                const int startCol = (t.startCol <= (int)line.size())
+                                     ? t.startCol : (int)line.size();
+                const int endCol = (startCol + t.length <= (int)line.size())
+                                   ? startCol + t.length : (int)line.size();
+
+                const sptr_t lineStart = fn(ptr, SCI_POSITIONFROMLINE, t.line, 0);
+                const sptr_t from = lineStart + utf8Len(line.substr(0, (size_t)startCol));
+                const sptr_t to   = lineStart + utf8Len(line.substr(0, (size_t)endCol));
+                fn(ptr, SCI_SETSEL, from, to);
+                fn(ptr, SCI_SCROLLCARET, 0, 0);
+            }
             SetFocus(hSci);
         }
     }

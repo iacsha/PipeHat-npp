@@ -212,6 +212,49 @@ int main() {
            "MSH-2 would split into pieces, which is why MessageTreeView skips it");
     }
 
+    // ---------------------------------------------------------------- [12]
+    // Offsets are what let a click in the tree select the exact piece in the
+    // editor instead of just jumping to the line. Every one is relative to the
+    // start of the FIELD text; the caller adds the field's own position.
+    std::printf("[12] offsets into the field text\n");
+    {
+        const std::wstring f = L"1234^^^MRN&ISO&L~5678^^^MR";
+        std::vector<Node> n = buildFieldChildren(f, D, L"CX");
+
+        eqi(n[0].offset, 0, "repetition 1 starts at 0");
+        eqi(n[0].length, 16, "repetition 1 spans its own text only");
+        eqi(n[1].offset, 17, "repetition 2 starts after the ~");
+        eqs(f.substr((size_t)n[1].offset, (size_t)n[1].length), L"5678^^^MR",
+            "slicing the field by repetition 2's range returns repetition 2");
+
+        const Node& auth = n[0].children[3];
+        eqs(f.substr((size_t)auth.offset, (size_t)auth.length), L"MRN&ISO&L",
+            "component 4's range returns component 4");
+        eqs(f.substr((size_t)auth.children[1].offset, (size_t)auth.children[1].length), L"ISO",
+            "subcomponent .4.2's range returns ISO");
+
+        // An empty piece still has an honest position: it is where a value would
+        // go, which is what makes selecting it useful at all.
+        const Node& empty = n[0].children[1];
+        eqi(empty.length, 0, "an empty component has zero length");
+        eqi(empty.offset, 5, "and still points at where it would start");
+
+        // No repetition level means components are measured from the field start.
+        std::vector<Node> c = buildFieldChildren(L"DOE^JANE^Q", D, L"XPN");
+        eqi(c[0].offset, 0, "component 1 of a non-repeating field starts at 0");
+        // DOE(0-2) ^(3) JANE(4-7) ^(8) Q(9)
+        eqi(c[2].offset, 9, "component 3 starts after both separators");
+        eqs(std::wstring(L"DOE^JANE^Q").substr((size_t)c[2].offset, (size_t)c[2].length), L"Q",
+            "and slicing by that range returns Q");
+
+        // The summary node stands in for siblings that were not shown, so it
+        // describes no single range and must not claim one.
+        std::wstring many = L"r1";
+        for (int i = 2; i <= 200; ++i) many += L"~r" + std::to_wstring(i);
+        std::vector<Node> m = buildFieldChildren(many, D, L"ZZZ");
+        eqi(m.back().offset, -1, "Anti: the truncation summary claims no range");
+    }
+
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
