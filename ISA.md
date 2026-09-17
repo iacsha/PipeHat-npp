@@ -4,7 +4,7 @@ project: PipeHat
 effort: E3
 effort_source: classifier
 phase: verify
-progress: 89/132
+progress: 89/137
 mode: interactive
 started: 2026-08-25T13:12:03Z
 updated: 2026-09-15T00:00:00Z
@@ -244,6 +244,11 @@ from the menu, and blocked from being sent over MLLP without confirmation.
 - [ ] ISC-130: Clicking a segment node selects the whole line
 - [ ] ISC-131: Anti: selection stays correct on a line containing a non-ASCII character
 - [ ] ISC-132: Clicking a node inside a folded segment unfolds it first
+- [ ] ISC-133: A single left click selects the node's piece in the editor
+- [ ] ISC-134: Arrow-key walking the tree moves the selection with it
+- [ ] ISC-135: Anti: a single click does not move keyboard focus out of the tree
+- [ ] ISC-136: A double click selects the piece and moves focus to the editor
+- [ ] ISC-137: Anti: rebuilding the tree does not scroll the editor
 
 ## Test Strategy
 
@@ -275,6 +280,7 @@ from the menu, and blocked from being sent over MLLP without confirmation.
 | ISC-120 | manual | hover each endpoint field | tooltip appears and wraps | Notepad++ debug session |
 | ISC-121..126 | unit | ranges re-slice the source field | exact string equality | `tests/FieldTreeTest.exe` |
 | ISC-127..132 | manual | click each node depth in the panel | selection matches the node | Notepad++ debug session |
+| ISC-133..137 | manual | single click, arrow keys, double click, reopen a buffer | selection follows, focus stays, no scroll on rebuild | Notepad++ debug session |
 | ISC-76..77 | manual | upgrade over an existing PipeHat.ini, then restart twice | written once, not twice | Notepad++ debug session |
 | all | build | full plugin compiles | zero errors | `cmake --build build --config Release` |
 | all | build | both standalone tests under MSVC | exit 0, /W4 clean | `cmd /c tests\runtests.bat` |
@@ -394,6 +400,17 @@ from the menu, and blocked from being sent over MLLP without confirmation.
   characters works until a message carries an accented name, and then every position after it is
   silently wrong. `SCI_SETSEL` and `SCI_ENSUREVISIBLE` had to be added to the stripped vendored
   `Scintilla.h`, per the standing rule for new Scintilla messages.
+
+- **2026-09-17T00:00:00Z** `refuted:` single-click navigation was believed missing, and the fix was
+  believed to be adding it. `TVN_SELCHANGEDW` was already handled -- with a SECOND copy of the
+  navigation code that still read `lParam` as `line + 1`. When node lParams became indexes into
+  `m_targets`, only the double-click path was updated, so single click called `SCI_GOTOLINE` with an
+  index and jumped to unrelated lines. `learned:` two implementations of one behaviour is the defect;
+  a contract change updates whichever copy you remember. `criterion_now:` both paths call
+  `onTreeClick`, which takes only a `moveFocus` flag.
+- **2026-09-17T00:00:00Z** A selection change does not move focus; a double click does. Walking the
+  tree with the arrow keys is the case that matters when reading down a message, and stealing focus
+  on the first keypress would end the walk.
 
 ## Verification
 

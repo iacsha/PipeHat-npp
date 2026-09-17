@@ -77,5 +77,16 @@ private:
     static INT_PTR CALLBACK dlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
     static MessageTreeView* s_instance; // singleton for static callback
 
-    void onTreeClick(LPARAM lParam);
+    // Navigate to the node currently selected in the tree.
+    //
+    // moveFocus is false for a selection change -- a single click or an arrow
+    // key -- so the editor scrolls and highlights while the keyboard stays in
+    // the tree and the reader can keep walking it. A double click means "take me
+    // there", so that one moves focus to the editor.
+    void onTreeClick(bool moveFocus);
+
+    // True while refresh() is rebuilding. The TreeView raises selection changes
+    // as items are inserted and removed, and acting on those would scroll the
+    // editor around while the panel is merely being repopulated.
+    bool m_refreshing = false;
 };

@@ -114,12 +114,9 @@ HTREEITEM MessageTreeView::addFieldNode(HTREEITEM parent, const std::wstring& te
     return (HTREEITEM)SendMessageW(m_hTree, TVM_INSERTITEMW, 0, (LPARAM)&tvis);
 }
 
-// Hang a field's repetition / component / subcomponent nodes. Every node carries
-// the same lParam as its field, so clicking anywhere in the subtree navigates to
-// the segment's line -- the tree stores line+1 and onTreeClick does SCI_GOTOLINE.
-// Navigating to the exact component offset would need the byte range that
-// analyzeCaretField computes in main.cpp; the line is the honest answer until
-// that is plumbed through.
+// Hang a field's repetition / component / subcomponent nodes. Each node gets its
+// own entry in m_targets, so clicking one selects exactly that piece rather than
+// the whole line it sits on.
 void MessageTreeView::addValueNodes(HTREEITEM parent, const std::vector<hl7tree::Node>& nodes,
                                     int line, int fieldStart, int& budget) {
     for (const auto& n : nodes) {
@@ -139,6 +136,14 @@ void MessageTreeView::addValueNodes(HTREEITEM parent, const std::vector<hl7tree:
 void MessageTreeView::refresh(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrDirect,
                                HL7Lexer& sharedLexer, SegmentDB& segDB) {
     if (!m_hTree || !fnDirect) return;
+
+    // Inserting and deleting items raises selection changes; acting on those
+    // would scroll the editor around while the panel is only being rebuilt.
+    m_refreshing = true;
+    struct ClearGuard {
+        bool* flag;
+        ~ClearGuard() { *flag = false; }
+    } guard{ &m_refreshing };
 
     clearTree();
 
@@ -290,7 +295,7 @@ void MessageTreeView::refresh(HWND hScintilla, SciFnDirect fnDirect, sptr_t ptrD
     }
 }
 
-void MessageTreeView::onTreeClick(LPARAM lParam) {
+void MessageTreeView::onTreeClick(bool moveFocus) {
     if (!m_hTree || !m_nppData) return;
 
     HTREEITEM hItem = (HTREEITEM)SendMessageW(m_hTree, TVM_GETNEXTITEM, TVGN_CARET, 0);
@@ -341,7 +346,7 @@ void MessageTreeView::onTreeClick(LPARAM lParam) {
                 fn(ptr, SCI_SETSEL, from, to);
                 fn(ptr, SCI_SCROLLCARET, 0, 0);
             }
-            SetFocus(hSci);
+            if (moveFocus) SetFocus(hSci);
         }
     }
 }
@@ -376,38 +381,25 @@ INT_PTR CALLBACK MessageTreeView::dlgProc(HWND hDlg, UINT message, WPARAM wParam
 
         case WM_NOTIFY: {
             NMHDR* nmhdr = (NMHDR*)lParam;
-            if (nmhdr->idFrom == 0 && nmhdr->code == NM_DBLCLK) {
-                self->onTreeClick(lParam);
-            }
-            // Also handle single click for navigation
-            if (nmhdr->idFrom == 0 && nmhdr->code == TVN_SELCHANGEDW) {
-                NMTREEVIEWW* pnmtv = (NMTREEVIEWW*)lParam;
-                if (pnmtv->itemNew.hItem) {
-                    TVITEMW item;
-                    memset(&item, 0, sizeof(item));
-                    item.hItem = pnmtv->itemNew.hItem;
-                    item.mask = TVIF_PARAM;
-                    SendMessageW(self->m_hTree, TVM_GETITEMW, 0, (LPARAM)&item);
-                    int lineNumber = (int)item.lParam;
+            if (nmhdr->idFrom != 0) return FALSE;
 
-                    if (lineNumber > 0 && self->m_nppData) {
-                        int which = 0;
-                        SendMessage(self->m_nppData->_nppHandle, NPPM_GETCURRENTSCINTILLA, 0, (LPARAM)&which);
-                        HWND hSci = (which == 0) ? self->m_nppData->_scintillaMainHandle
-                                                  : self->m_nppData->_scintillaSecondHandle;
-                        if (hSci) {
-                            SciFnDirect fn = (SciFnDirect)SendMessage(hSci, SCI_GETDIRECTFUNCTION, 0, 0);
-                            sptr_t ptr = (sptr_t)SendMessage(hSci, SCI_GETDIRECTPOINTER, 0, 0);
-                            if (fn) {
-                                // lParam is line+1; SCI_GOTOLINE is 0-based.
-                                fn(ptr, SCI_GOTOLINE, lineNumber - 1, 0);
-                                SetFocus(hSci);
-                            }
-                        }
-                    }
-                }
+            // Both paths run the SAME navigation. They used to be two separate
+            // implementations, and when the meaning of a node's lParam changed
+            // only one of them was updated -- so single click went on calling
+            // SCI_GOTOLINE with what had become an index into the target table,
+            // and quietly jumped to unrelated lines.
+            if (nmhdr->code == TVN_SELCHANGEDW) {
+                // Selection changes cover a single click AND arrow-key walking,
+                // which is the case that matters when reading down a message.
+                // Focus stays in the tree so the next arrow key still lands here.
+                if (!self->m_refreshing) self->onTreeClick(false);
+                return TRUE;
             }
-            return TRUE;
+            if (nmhdr->code == NM_DBLCLK) {
+                self->onTreeClick(true);   // "take me there"
+                return TRUE;
+            }
+            return FALSE;
         }
 
         case WM_DESTROY: {
