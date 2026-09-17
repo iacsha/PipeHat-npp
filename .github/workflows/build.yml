@@ -61,13 +61,16 @@ jobs:
           cl /nologo /EHsc /std:c++17 /I src tests\MessageRefreshTest.cpp /Fe:build\ci\MessageRefreshTest.exe /Fo:build\ci\ || exit /b 1
           cl /nologo /EHsc /std:c++17 /I src tests\TransformProviderTest.cpp /Fe:build\ci\TransformProviderTest.exe /Fo:build\ci\ || exit /b 1
           cl /nologo /EHsc /std:c++17 /I src tests\TlsLoopbackTest.cpp src\TlsChannel.cpp /Fe:build\ci\TlsLoopbackTest.exe /Fo:build\ci\ || exit /b 1
+          cl /nologo /EHsc /std:c++17 /I src tests\EndpointProfileTest.cpp /Fe:build\ci\EndpointProfileTest.exe /Fo:build\ci\ || exit /b 1
+          cl /nologo /EHsc /std:c++17 /I src tests\FieldTreeTest.cpp /Fe:build\ci\FieldTreeTest.exe /Fo:build\ci\ || exit /b 1
 
       - name: Run standalone tests
         shell: pwsh
         run: |
           $failed = @()
           foreach ($t in 'FieldPathTest','SegmentIDTest','MessageIndexTest',
-                         'MessageRefreshTest','TransformProviderTest','TlsLoopbackTest') {
+                         'MessageRefreshTest','TransformProviderTest','TlsLoopbackTest',
+                         'EndpointProfileTest','FieldTreeTest') {
             Write-Host "--- $t"
             & ".\build\ci\$t.exe"
             if ($LASTEXITCODE -ne 0) { $failed += "$t (exit $LASTEXITCODE)" }
