@@ -4,6 +4,71 @@ All notable changes to PipeHat. Versions follow [semantic versioning](https://se
 
 ---
 
+## [2.5.0] -- 2026-11-18
+
+Release housekeeping, so PipeHat can be listed in Notepad++ Plugins Admin.
+
+### Fixed
+
+- **The plugin reports its real version again.** v2.4.0 shipped saying it was 2.3.0,
+  because the version was written in three places (CMake, `PluginDefs.h` and the git
+  tag) and only the tag was bumped. The About box showed the wrong number, and Check for
+  Updates told every v2.4.0 user that 2.4.0 was available. The version now lives only in
+  `src/Version.h`. CMake reads it, `HL7_PLUGIN_VERSION` is derived from it, and so is the
+  new version resource.
+
+### Added
+
+- **A Windows version resource.** The DLL now carries VERSIONINFO, so Windows file
+  properties show the version, and the Notepad++ plugin list validator (which requires
+  the DLL's FileVersion to match the listed version) can read it.
+- **CI version guard.** The build fails if `PIPEHAT_VERSION_STR` disagrees with the
+  numbers beside it, if the built DLL's FileVersion disagrees with `Version.h`, or if a
+  release tag disagrees with it.
+- **The endpoint profile and field tree harnesses run in CI.** Both were added with the
+  features they cover in 2.4.0 but only ever ran by hand.
+
+### Changed
+
+- **Release zip layout.** `PipeHat.dll` now sits at the root of the release zip, next to
+  README, CHANGELOG and LICENSE, which is the layout Plugins Admin installs from and the
+  plugin list validator requires. For a manual install, create `plugins\PipeHat\` and
+  unzip into it (previously the zip contained the `PipeHat\` folder). Each release also
+  carries a `.sha256` file for the zip.
+
+## [2.4.0] -- 2026-09-17
+
+This section was added in 2.5.0; v2.4.0 was released without one.
+
+### Added
+
+- **Endpoint profiles.** A profile is now one interface: alongside its conformance rules
+  it carries the endpoint (application, engine, message type, environment, display name,
+  description, inherits) and where it lives (host, send and listen ports, bind address,
+  non-loopback opt-in). Switching profiles repoints PipeHat in one step.
+- **Message tree below the field.** Repetitions, components and subcomponents appear as
+  tree nodes, and clicking any node selects exactly that piece in the editor, not just its
+  line.
+- **New-profile walkthrough and Delete.** Profiles are created through a step-by-step
+  walkthrough that writes nothing until the last step. Delete refuses the default profile
+  and lists any profiles that inherit from the one being removed.
+- `tests/runtests.bat` builds and runs the standalone harnesses under MSVC;
+  `tests/tree-test.hl7` and `tests/TreeDump.cpp` show what the tree will build.
+
+### Changed
+
+- **Settings is two windows.** Profile Settings holds what travels with a profile;
+  Plug-in Settings holds the MLLP master switch, saving received messages, and the global
+  half of the non-loopback permission.
+- **Browsing profiles no longer writes them.** Changing the dropdown used to save the
+  profile being left; edits are now tracked, and leaving unsaved changes asks first.
+
+### Fixed
+
+- **A single click in the tree went to the wrong line.** It ran a second, stale copy of
+  the navigation code. Single and double click now share one path; a single click
+  highlights without moving focus, and a double click moves focus to the editor.
+
 ## [2.3.0] -- 2026-08-25
 
 ### Added
