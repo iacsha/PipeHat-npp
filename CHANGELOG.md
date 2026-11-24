@@ -4,6 +4,20 @@ All notable changes to PipeHat. Versions follow [semantic versioning](https://se
 
 ---
 
+## [2.5.1] -- 2026-11-24
+
+No code changes. This release adds 32-bit and ARM builds, so PipeHat can be listed for
+every Notepad++ architecture.
+
+### Added
+
+- **x86 and arm64 builds.** CI now builds the plugin for x64, x86 and arm64. Each release
+  carries `PipeHat-vX.Y.Z-x64.zip`, `-x86.zip` and `-arm64.zip`, each with a `.sha256`. A
+  CI step checks the DLL's PE machine type, so a zip can't ship the wrong architecture.
+  The standalone harnesses still run in the x64 build only.
+
+---
+
 ## [2.5.0] -- 2026-11-18
 
 Release housekeeping, so PipeHat can be listed in Notepad++ Plugins Admin.

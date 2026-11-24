@@ -2,7 +2,7 @@
 
 **An HL7 v2.x message viewer for Notepad++.** PipeHat turns Notepad++ into a fluent
 HL7 workbench: syntax highlighting, hover tooltips with field definitions, a dockable
-message-tree panel, and a fail-closed PHI scrubber. Windows-only, x64, Unicode.
+message-tree panel, and a fail-closed PHI scrubber. Windows-only (x64, x86 and arm64), Unicode.
 
 Named after the `|^~\&` "pipe-and-hat" encoding characters every HL7 interface engineer
 knows by heart.
@@ -70,8 +70,8 @@ Any conflicts can be remapped in *Settings -> Shortcut Mapper -> Plugin commands
 
 ## Requirements
 
-- Windows x64
-- Notepad++ (x64)
+- Windows (x64, x86 or arm64)
+- Notepad++ of the same architecture (x64, x86 or arm64)
 - To build from source: CMake 3.15+ and Visual Studio 2019/2022 (MSVC, C++17)
 
 ---
@@ -99,7 +99,7 @@ should see colorized segments and a **PipeHat** entry under *Plugins* in the men
 Out-of-source build with CMake + MSVC:
 
 ```powershell
-cmake -S . -B build -A x64
+cmake -S . -B build -A x64     # or -A Win32 (x86), -A ARM64
 cmake --build build --config Release
 # output: build/Release/PipeHat.dll
 ```
